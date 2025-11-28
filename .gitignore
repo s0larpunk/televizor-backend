@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# Telegram sessions
+sessions/
+*.session
+*.session-journal
+
+# Environment variables
+.env
+
+# User data and configurations
+feeds_config.json
+feeds_config.json.backup
+users_config.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
