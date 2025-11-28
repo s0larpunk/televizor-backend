@@ -8,6 +8,7 @@ from telegram_client import get_telegram_manager, cleanup_client
 import asyncio
 from contextlib import asynccontextmanager
 import os
+from database import engine, Base
 
 # Import rate limiting
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -31,6 +32,9 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Ensure database tables exist
+    Base.metadata.create_all(bind=engine)
+    
     # Startup: Start the feed worker in the background
     worker_task = asyncio.create_task(start_feed_worker())
     yield
@@ -317,7 +321,7 @@ from user_manager import UserManager
 from models import SubscriptionTier
 
 # Initialize managers
-feed_config_manager = FeedConfigManager(config.FEEDS_CONFIG_FILE)
+feed_config_manager = FeedConfigManager()
 user_manager = UserManager()
 
 @app.get("/api/feeds/list")

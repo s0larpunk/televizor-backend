@@ -1,13 +1,13 @@
-
 import asyncio
 import logging
 from typing import Dict, Set
 from datetime import datetime, timedelta
 from telethon import TelegramClient, events, utils
-from telethon.errors import ChatWriteForbiddenError, ChatAdminRequiredError
 from telegram_client import get_telegram_manager
 from feed_manager import FeedConfigManager
 from user_manager import UserManager
+from redis_client import RateLimiter
+from tasks import forward_message_task
 import config
 
 logging.basicConfig(
@@ -17,14 +17,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class FeedWorker:
-    """Background worker that listens to channels and forwards messages."""
+    """Background worker that listens to channels and queues messages for forwarding."""
     
     def __init__(self, feed_config_manager: FeedConfigManager):
         self.feed_config_manager = feed_config_manager
         self.user_manager = UserManager()
         self.active_handlers: Dict[str, Set] = {}  # user_id -> set of handler references
         self.user_config_hashes: Dict[str, str] = {} # user_id -> config hash
-        self.message_counts: Dict[str, Dict[str, list]] = {} # user_id -> key -> list of timestamps
         self.running = False
     
     async def start(self):
@@ -102,47 +101,16 @@ class FeedWorker:
         return True
 
     def _check_rate_limit(self, user_id: str, key: str, filters) -> bool:
-        """Check rate limits. Returns True if allowed."""
+        """Check rate limits using Redis. Returns True if allowed."""
         if not filters:
             return True
             
-        now = datetime.now()
-        
-        # Initialize counts if needed
-        if user_id not in self.message_counts:
-            self.message_counts[user_id] = {}
-        if key not in self.message_counts[user_id]:
-            self.message_counts[user_id][key] = []
-            
-        timestamps = self.message_counts[user_id][key]
-        
-        # Clean up old timestamps (older than 1 day)
-        cutoff = now - timedelta(days=1)
-        timestamps = [t for t in timestamps if t > cutoff]
-        self.message_counts[user_id][key] = timestamps
-        
-        # Check hourly limit
-        if filters.max_messages_per_hour:
-            hour_cutoff = now - timedelta(hours=1)
-            last_hour_count = sum(1 for t in timestamps if t > hour_cutoff)
-            if last_hour_count >= filters.max_messages_per_hour:
-                return False
-                
-        # Check daily limit
-        if filters.max_messages_per_day:
-            if len(timestamps) >= filters.max_messages_per_day:
-                return False
-                
-        return True
-
-    def _record_message(self, user_id: str, key: str):
-        """Record a forwarded message for rate limiting."""
-        if user_id not in self.message_counts:
-            self.message_counts[user_id] = {}
-        if key not in self.message_counts[user_id]:
-            self.message_counts[user_id][key] = []
-        
-        self.message_counts[user_id][key].append(datetime.now())
+        return RateLimiter.check_rate_limit(
+            user_id, 
+            key, 
+            max_hourly=filters.max_messages_per_hour, 
+            max_daily=filters.max_messages_per_day
+        )
 
     async def _setup_user_handlers(self, user_id: str, feeds: list, sub_status):
         """Set up message handlers for a user's feeds."""
@@ -184,10 +152,9 @@ class FeedWorker:
                 else:
                     feeds = []
                     logger.info(f"Trial expired for {user_id}. No allowed feeds found.")
-                    # TODO: Send expiry notification message to user's channels
                     return
 
-            # Map source -> list of feeds (to handle multiple feeds per source with different filters)
+            # Map source -> list of feeds
             source_to_feeds: Dict[int, list] = {}
             for feed in feeds:
                 for source_id in feed.source_channel_ids:
@@ -203,18 +170,20 @@ class FeedWorker:
                     logger.info(f"Received message from {event.chat_id} (normalized: {source_channel_id})")
                     
                     relevant_feeds = source_to_feeds.get(source_channel_id, [])
+                    logger.info(f"Found {len(relevant_feeds)} relevant feeds for source {source_channel_id}")
                     
                     if not relevant_feeds:
-                        logger.warning(f"No feeds found for source {source_channel_id}")
+                        logger.warning(f"No feeds found for source {source_channel_id}. Available sources: {list(source_to_feeds.keys())}")
                         return
                     
                     for feed in relevant_feeds:
                         try:
+                            logger.info(f"Processing feed {feed.id} for message {event.message.id}")
                             # 1. Check Source Filters & Limits
                             source_filter = feed.source_filters.get(source_channel_id) if feed.source_filters else None
                             if source_filter:
                                 if not self._check_filters(event.message, source_filter):
-                                    logger.info(f"Message filtered out by source filter for feed {feed.id} source {source_channel_id}")
+                                    logger.info(f"Filtered by source filter: {source_filter}")
                                     continue
                                 if not self._check_rate_limit(user_id, f"source_{source_channel_id}", source_filter):
                                     logger.info(f"Rate limit reached for feed {feed.id} source {source_channel_id}")
@@ -223,76 +192,29 @@ class FeedWorker:
                             # 2. Check Global Filters & Limits
                             if feed.filters:
                                 if not self._check_filters(event.message, feed.filters):
-                                    logger.info(f"Message filtered out by global filter for feed {feed.id}")
+                                    logger.info(f"Filtered by global filter: {feed.filters}")
                                     continue
                                 if not self._check_rate_limit(user_id, f"feed_{feed.id}", feed.filters):
                                     logger.info(f"Global rate limit reached for feed {feed.id}")
                                     continue
 
-                            # Forward the message
-                            # If delay is enabled, schedule for 15 seconds in the future (must be >10s to be treated as scheduled)
-                            # This allows for unread counts to update and resuming at the correct point
-                            if getattr(feed, 'delay_enabled', True):
-                                try:
-                                    # Use UTC to avoid timezone issues
-                                    from datetime import timezone
-                                    schedule_date = datetime.now(timezone.utc) + timedelta(seconds=10)
-                                    
-                                    await client.forward_messages(
-                                        entity=feed.destination_channel_id,
-                                        messages=event.message,
-                                        schedule=schedule_date
-                                    )
-                                    logger.info(
-                                        f"Scheduled forwarded message from {source_channel_id} to {feed.destination_channel_id} (delay: 15s)"
-                                    )
-                                except Exception as e:
-                                    logger.warning(f"Scheduling failed ({e}), forwarding immediately")
-                                    await client.forward_messages(
-                                        entity=feed.destination_channel_id,
-                                        messages=event.message
-                                    )
-                                    logger.info(
-                                        f"Forwarded message (fallback) from {source_channel_id} to {feed.destination_channel_id}"
-                                    )
-                            else:
-                                # Instant forwarding
-                                await client.forward_messages(
-                                    entity=feed.destination_channel_id,
-                                    messages=event.message
-                                )
-                                logger.info(
-                                    f"Forwarded message (instant) from {source_channel_id} to {feed.destination_channel_id}"
-                                )
+                            # 3. Queue for Forwarding
+                            delay = 15 if getattr(feed, 'delay_enabled', True) else 0
                             
-                            # Record for rate limiting
-                            if source_filter:
-                                self._record_message(user_id, f"source_{source_channel_id}")
-                            if feed.filters:
-                                self._record_message(user_id, f"feed_{feed.id}")
+                            # Push to Celery Queue
+                            forward_message_task.delay(
+                                user_id=user_id,
+                                source_chat_id=source_channel_id,
+                                destination_channel_id=feed.destination_channel_id,
+                                message_id=event.message.id,
+                                delay_seconds=delay
+                            )
                             
-                            # Clear any previous error if successful
-                            if feed.error:
-                                self.feed_config_manager.update_feed(user_id, feed.id, {"error": None})
-
-                        except ChatWriteForbiddenError:
-                            error_msg = "Permission denied: Cannot write to destination channel"
-                            logger.error(f"Feed {feed.id}: {error_msg}")
-                            self.feed_config_manager.update_feed(user_id, feed.id, {"error": error_msg})
-                        except ChatAdminRequiredError:
-                            error_msg = "Permission denied: Admin privileges required"
-                            logger.error(f"Feed {feed.id}: {error_msg}")
-                            self.feed_config_manager.update_feed(user_id, feed.id, {"error": error_msg})
+                            logger.info(f"Queued message {event.message.id} for forwarding to {feed.destination_channel_id}")
+                            
                         except Exception as e:
-                            # Catch generic Telethon errors that might be related to permissions
-                            if "Chat admin privileges are required" in str(e) or "invalid permissions" in str(e):
-                                error_msg = "Permission denied: Check channel permissions"
-                                logger.error(f"Feed {feed.id}: {error_msg} ({e})")
-                                self.feed_config_manager.update_feed(user_id, feed.id, {"error": error_msg})
-                            else:
-                                logger.error(
-                                    f"Failed to forward message to {feed.destination_channel_id}: {e}"
-                                )
+                            logger.error(f"Error processing feed {feed.id}: {e}")
+                            
                 except Exception as e:
                     logger.error(f"Error in message handler: {e}")
             
@@ -318,7 +240,7 @@ async def start_feed_worker():
     """Start the global feed worker."""
     global _worker
     if _worker is None:
-        feed_config_manager = FeedConfigManager(config.FEEDS_CONFIG_FILE)
+        feed_config_manager = FeedConfigManager()
         _worker = FeedWorker(feed_config_manager)
     
     await _worker.start()

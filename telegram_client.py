@@ -1,7 +1,7 @@
 from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError
 from telethon.tl.functions.channels import CreateChannelRequest
-from telethon.tl.types import Channel
+from telethon.tl.types import Channel, ChatPhotoEmpty, UserProfilePhotoEmpty
 from typing import Optional, List, Dict
 import asyncio
 from pathlib import Path
@@ -108,12 +108,16 @@ class TelegramManager:
             entity = dialog.entity
             # Include channels, supergroups, and groups
             if isinstance(entity, Channel) or hasattr(entity, 'megagroup'):
+                # Check if photo exists and is not empty
+                has_photo = hasattr(entity, 'photo') and entity.photo is not None and not isinstance(entity.photo, ChatPhotoEmpty) and not isinstance(entity.photo, UserProfilePhotoEmpty)
+                
                 channels.append({
                     "id": entity.id,
                     "title": entity.title,
                     "username": getattr(entity, 'username', None),
                     "type": "channel" if getattr(entity, 'broadcast', False) else "group",
-                    "member_count": getattr(entity, 'participants_count', None)
+                    "member_count": getattr(entity, 'participants_count', None),
+                    "has_photo": has_photo
                 })
         
         return channels
