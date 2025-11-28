@@ -18,6 +18,7 @@ class VerifyCodeRequest(BaseModel):
     phone: str
     code: str
     phone_code_hash: str
+    referral_code: Optional[str] = None
 
 class VerifyPasswordRequest(BaseModel):
     password: str

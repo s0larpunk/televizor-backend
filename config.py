@@ -34,3 +34,7 @@ STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
 TBANK_TERMINAL_KEY = os.getenv("TBANK_TERMINAL_KEY", "")
 TBANK_PASSWORD = os.getenv("TBANK_PASSWORD", "")
 TBANK_TEST_MODE = os.getenv("TBANK_TEST_MODE", "true").lower() == "true"
+
+# Coinbase Configuration
+COINBASE_API_KEY = os.getenv("COINBASE_API_KEY", "")
+COINBASE_WEBHOOK_SECRET = os.getenv("COINBASE_WEBHOOK_SECRET", "")

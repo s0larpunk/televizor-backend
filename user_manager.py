@@ -5,6 +5,8 @@ from sqlalchemy.orm import Session
 from database import SessionLocal
 from sql_models import User
 from models import SubscriptionStatus, SubscriptionTier
+import random
+import string
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +25,8 @@ class UserManager:
             
             if not user:
                 # Create new user
-                user = User(phone=phone, tier=SubscriptionTier.FREE)
+                referral_code = self.generate_referral_code()
+                user = User(phone=phone, tier=SubscriptionTier.FREE, referral_code=referral_code)
                 db.add(user)
                 db.commit()
                 db.refresh(user)
@@ -86,16 +89,24 @@ class UserManager:
         finally:
             db.close()
 
-    def upgrade_to_premium(self, phone: str):
+    def upgrade_to_premium(self, phone: str, payment_method: str = None):
         """Upgrade user to premium."""
         db = self.get_db()
         try:
             user = db.query(User).filter(User.phone == phone).first()
             if user:
                 user.tier = SubscriptionTier.PREMIUM
-                user.expiry_date = datetime.utcnow() + timedelta(days=30)
+                # Extend expiry date
+                now = datetime.utcnow()
+                if user.expiry_date and user.expiry_date > now:
+                    user.expiry_date += timedelta(days=30)
+                else:
+                    user.expiry_date = now + timedelta(days=30)
+                
+                if payment_method:
+                    user.payment_method = payment_method
                 db.commit()
-                logger.info(f"Upgraded user {phone} to premium")
+                logger.info(f"Upgraded user {phone} to premium via {payment_method or 'unknown'}. New expiry: {user.expiry_date}")
         finally:
             db.close()
 
@@ -173,6 +184,83 @@ class UserManager:
                     except Exception as e:
                         logger.error(f"Error handling feeds during downgrade for {phone}: {e}")
 
+        finally:
+            db.close()
+
+    def generate_referral_code(self, length=8):
+        """Generate a unique referral code."""
+        chars = string.ascii_uppercase + string.digits
+        return ''.join(random.choice(chars) for _ in range(length))
+
+    def apply_referral_bonus(self, phone: str, referrer_code: str):
+        """Apply referral bonus to both users."""
+        if not referrer_code:
+            return
+            
+        db = self.get_db()
+        try:
+            # Find new user
+            user = db.query(User).filter(User.phone == phone).first()
+            if not user:
+                return
+                
+            # Prevent self-referral
+            if user.referral_code == referrer_code:
+                return
+
+            # Find referrer
+            referrer = db.query(User).filter(User.referral_code == referrer_code).first()
+            if not referrer:
+                return
+            
+            # Check if already referred
+            if user.referred_by:
+                return
+                
+            # Link users
+            user.referred_by = referrer.phone
+            referrer.referral_count += 1
+            
+            # Award bonus (7 days premium)
+            bonus_days = 7
+            
+            for u in [user, referrer]:
+                # If free, upgrade to trial/premium
+                if u.tier == SubscriptionTier.FREE:
+                    u.tier = SubscriptionTier.TRIAL # Or PREMIUM, effectively same access
+                    u.expiry_date = datetime.utcnow() + timedelta(days=bonus_days)
+                    u.trial_start_date = datetime.utcnow() # Mark trial as started
+                else:
+                    # Extend existing expiry
+                    if u.expiry_date:
+                        u.expiry_date += timedelta(days=bonus_days)
+                    else:
+                        u.expiry_date = datetime.utcnow() + timedelta(days=bonus_days)
+            
+            db.commit()
+            logger.info(f"Applied referral bonus: {referrer.phone} -> {user.phone}")
+            
+        finally:
+            db.close()
+
+    def get_referral_info(self, phone: str):
+        """Get referral info for a user."""
+        db = self.get_db()
+        try:
+            user = db.query(User).filter(User.phone == phone).first()
+            if not user:
+                return None
+            
+            # Ensure user has a code (migration support)
+            if not user.referral_code:
+                user.referral_code = self.generate_referral_code()
+                db.commit()
+                
+            return {
+                "referral_code": user.referral_code,
+                "referral_count": user.referral_count or 0,
+                "referred_by": user.referred_by
+            }
         finally:
             db.close()
 

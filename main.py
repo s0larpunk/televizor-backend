@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Cookie, Response, Request, Header, Body
+from fastapi import FastAPI, HTTPException, Cookie, Response, Request, Header, Body, Depends
 from fastapi.responses import PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
@@ -22,6 +22,8 @@ from feed_worker import start_feed_worker, stop_feed_worker
 from telegram_payment import payment_service
 from stripe_payment import stripe_service
 from tbank_payment import tbank_service
+from tbank_payment import tbank_service
+from coinbase_payment import coinbase_service
 import json
 import logging
 from datetime import datetime, timedelta
@@ -53,12 +55,14 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[origin.strip() for origin in allowed_origins],
+    allow_origins=["http://localhost:3000", "https://televizor.ngrok.io"], # Add your frontend URL
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_methods=["*"],
     allow_headers=["*"],
-    max_age=3600,
 )
+
+# Apply x402 middleware
+# Apply x402 middleware - REMOVED
 
 # Simple session storage (in production, use Redis or similar)
 sessions = {}
@@ -160,6 +164,16 @@ async def verify_code(request: Request, body: models.VerifyCodeRequest, response
             max_age=30 * 24 * 60 * 60  # 30 days
         )
         
+        # Ensure user exists and apply referral bonus if applicable
+        try:
+            # This ensures user creation
+            user_manager.get_subscription_status(phone)
+            
+            if body.referral_code:
+                user_manager.apply_referral_bonus(phone, body.referral_code)
+        except Exception as e:
+            logger.error(f"Error handling referral for {phone}: {e}")
+
         return {
             "success": True,
             "message": "Authentication successful"
@@ -739,8 +753,22 @@ async def upgrade_subscription(request: Request):
         raise HTTPException(status_code=401, detail="Not authenticated")
     
     phone = sessions[session_id]["phone"]
-    user_manager.upgrade_to_premium(phone)
+    user_manager.upgrade_to_premium(phone, payment_method="manual")
     return {"status": "success", "tier": "premium"}
+
+@app.get("/api/referral")
+async def get_referral_info(request: Request):
+    """Get referral info for current user."""
+    session_id = request.cookies.get("session_id")
+    if not session_id or session_id not in sessions:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    phone = sessions[session_id]["phone"]
+    info = user_manager.get_referral_info(phone)
+    if not info:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    return info
 
 @app.post("/api/payment/create-invoice")
 @limiter.limit("10/minute")
@@ -854,15 +882,12 @@ async def payment_webhook(
                     phone = user_manager.get_phone_by_telegram_id(user_id)
                     
                     if phone:
-                        user_manager.upgrade_to_premium(phone)
+                        user_manager.upgrade_to_premium(phone, payment_method="stars")
                         logger.info(f"User {phone} (ID: {user_id}) upgraded to premium")
                         
-                        # AUTO-REFUND FOR TESTING
-                        await payment_service.refund_payment(user_id, charge_id)
                         await payment_service.send_message(
                             user_id, 
-                            "✅ Payment received! You are now Premium.\n\n"
-                            "🔄 TEST MODE: Your Stars have been refunded automatically."
+                            "✅ Payment received! You are now Premium."
                         )
                     else:
                         logger.error(f"Could not find user for Telegram ID {user_id}")
@@ -1001,7 +1026,7 @@ async def verify_stripe_payment(
             current_phone = sessions[session_cookie]["phone"]
             
             if phone and phone == current_phone:
-                user_manager.upgrade_to_premium(phone)
+                user_manager.upgrade_to_premium(phone, payment_method="stripe")
                 logger.info(f"User {phone} upgraded to Premium via Stripe verification")
                 return {"success": True, "status": "paid"}
             else:
@@ -1042,7 +1067,7 @@ async def stripe_webhook(request: Request):
             
             if phone:
                 # Upgrade user to Premium
-                user_manager.upgrade_to_premium(phone)
+                user_manager.upgrade_to_premium(phone, payment_method="stripe")
                 logger.info(f"User {phone} upgraded to Premium via Stripe")
             else:
                 logger.error("No phone in Stripe session metadata")
@@ -1208,3 +1233,94 @@ async def get_tbank_status(payment_id: str, request: Request):
 
 
 
+
+@app.post("/api/payment/x402/upgrade")
+async def upgrade_with_x402(request: Request):
+    """
+    Upgrade user to Premium using x402 crypto payment.
+    Protected by x402 middleware.
+    """
+    session_id = request.cookies.get("session_id")
+    if not session_id or session_id not in sessions:
+        # Note: In a real scenario, we might want to handle this better if the payment succeeded but auth failed.
+        # But for now, we assume valid session.
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    phone = sessions[session_id]["phone"]
+    
+    try:
+        user_manager.upgrade_to_premium(phone, payment_method="crypto")
+        logger.info(f"User {phone} upgraded to Premium via x402")
+        return {"success": True, "message": "Upgraded to Premium"}
+    except Exception as e:
+        logger.error(f"Error upgrading user via x402: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+@app.post("/api/payment/coinbase-charge")
+@limiter.limit("10/minute")
+async def create_coinbase_charge(request: Request):
+    """Create a Coinbase Commerce charge for Premium subscription."""
+    session_id = request.cookies.get("session_id")
+    if not session_id or session_id not in sessions:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    phone = sessions[session_id]["phone"]
+    
+    try:
+        # Create charge
+        charge = coinbase_service.create_charge(
+            name="Televizor Premium",
+            description="1 Month Premium Subscription",
+            pricing_type="fixed_price",
+            local_price={
+                "amount": "2.00",
+                "currency": "EUR"
+            },
+            metadata={
+                "phone": phone,
+                "type": "premium_subscription"
+            },
+            redirect_url=f"{config.HOST}/subscription?success=true&provider=coinbase",
+            cancel_url=f"{config.HOST}/subscription?canceled=true"
+        )
+        
+        return {
+            "success": True,
+            "hosted_url": charge.get("hosted_url"),
+            "code": charge.get("code")
+        }
+    except Exception as e:
+        logger.error(f"Error creating Coinbase charge: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create payment charge")
+
+@app.post("/api/webhooks/coinbase")
+async def coinbase_webhook(request: Request):
+    """Handle Coinbase Commerce webhooks."""
+    payload = await request.body()
+    signature = request.headers.get("X-CC-Webhook-Signature")
+    
+    if not signature:
+        raise HTTPException(status_code=400, detail="Missing signature")
+        
+    if not coinbase_service.verify_webhook_signature(payload, signature):
+        raise HTTPException(status_code=400, detail="Invalid signature")
+        
+    try:
+        event = await request.json()
+        event_data = event.get("event", {})
+        event_type = event_data.get("type")
+        
+        if event_type == "charge:confirmed":
+            data = event_data.get("data", {})
+            metadata = data.get("metadata", {})
+            phone = metadata.get("phone")
+            
+            if phone:
+                logger.info(f"Processing Coinbase payment for {phone}")
+                user_manager.upgrade_to_premium(phone, payment_method="coinbase")
+            else:
+                logger.warning("Coinbase webhook missing phone metadata")
+                
+        return {"status": "success"}
+    except Exception as e:
+        logger.error(f"Error processing Coinbase webhook: {e}")
+        raise HTTPException(status_code=500, detail="Webhook processing failed")

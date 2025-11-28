@@ -57,7 +57,7 @@ class TelegramPaymentService:
         self.webhook_secret = getattr(config, 'TELEGRAM_WEBHOOK_SECRET', None)
         
         # Payment configuration
-        self.premium_price_stars = int(getattr(config, 'PREMIUM_PRICE_STARS', 100))
+        self.premium_price_stars = int(getattr(config, 'PREMIUM_PRICE_STARS', 150))
         
     def verify_webhook_signature(self, request_data: str, signature: str) -> bool:
         """
