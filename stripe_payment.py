@@ -34,7 +34,8 @@ class StripePaymentService:
         success_url: str,
         cancel_url: str,
         customer_email: Optional[str] = None,
-        metadata: Optional[Dict[str, str]] = None
+        metadata: Optional[Dict[str, str]] = None,
+        line_items: Optional[list] = None
     ) -> Dict[str, Any]:
         """
         Create a Stripe Checkout session
@@ -44,20 +45,27 @@ class StripePaymentService:
             cancel_url: URL to redirect if payment is cancelled
             customer_email: Customer's email address (optional)
             metadata: Additional metadata to attach to the session
+            line_items: Custom line items with price_data (optional, overrides price_id)
             
         Returns:
             dict: Checkout session data including session ID and URL
         """
-        if not self.api_key or not self.price_id:
-            raise Exception("Stripe not configured. Please set STRIPE_SECRET_KEY and STRIPE_PRICE_ID")
+        if not self.api_key:
+            raise Exception("Stripe not configured. Please set STRIPE_SECRET_KEY")
+        
+        # If line_items not provided, use the configured price_id
+        if not line_items:
+            if not self.price_id:
+                raise Exception("Stripe PRICE_ID not configured and no line_items provided")
+            line_items = [{
+                'price': self.price_id,
+                'quantity': 1,
+            }]
         
         try:
             session = stripe.checkout.Session.create(
                 payment_method_types=['card'],
-                line_items=[{
-                    'price': self.price_id,
-                    'quantity': 1,
-                }],
+                line_items=line_items,
                 mode='subscription',
                 success_url=success_url,
                 cancel_url=cancel_url,
