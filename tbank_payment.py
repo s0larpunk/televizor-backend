@@ -56,7 +56,11 @@ class TBankPaymentService:
         # Concatenate values
         token_string = ""
         for key in sorted_keys:
-            token_string += str(token_params[key])
+            val = token_params[key]
+            if isinstance(val, bool):
+                token_string += str(val).lower()
+            else:
+                token_string += str(val)
         
         # SHA-256 hash
         return hashlib.sha256(token_string.encode()).hexdigest()
@@ -232,7 +236,8 @@ class TBankPaymentService:
         is_valid = received_token == expected_token
         
         if not is_valid:
-            logger.warning("Invalid T-Bank notification signature")
+            logger.warning(f"Invalid T-Bank notification signature. Received: {received_token}, Expected: {expected_token}")
+            logger.warning(f"Params used for token generation: {params}")
         
         return is_valid
     

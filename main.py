@@ -1283,8 +1283,8 @@ async def create_coinbase_charge(request: Request):
                 "phone": phone,
                 "type": "premium_subscription"
             },
-            redirect_url=f"{config.HOST}/subscription?success=true&provider=coinbase",
-            cancel_url=f"{config.HOST}/subscription?canceled=true"
+            redirect_url=f"{config.FRONTEND_URL}/subscription?success=true&provider=coinbase",
+            cancel_url=f"{config.FRONTEND_URL}/subscription?canceled=true"
         )
         
         return {
