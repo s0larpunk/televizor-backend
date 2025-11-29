@@ -1185,15 +1185,7 @@ async def tbank_webhook(request: Request):
                 
                 try:
                     # Upgrade user to premium
-                    user_config = load_user_config(phone)
-                    user_config["subscription"] = {
-                        "tier": "premium",
-                        "start_date": datetime.now().isoformat(),
-                        "payment_method": "tbank",
-                        "payment_id": payment_id,
-                        "order_id": order_id
-                    }
-                    save_user_config(phone, user_config)
+                    user_manager.upgrade_to_premium(phone, payment_method="tbank")
                     
                     logger.info(f"Upgraded user {phone} to Premium via T-Bank payment {payment_id}")
                     
