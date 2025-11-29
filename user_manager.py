@@ -46,8 +46,6 @@ class UserManager:
                 trial_start_date=user.trial_start_date.isoformat() if user.trial_start_date else None,
                 expiry_date=user.expiry_date.isoformat() if user.expiry_date else None,
                 is_expired=is_expired,
-                expiry_date=user.expiry_date.isoformat() if user.expiry_date else None,
-                is_expired=is_expired,
                 trial_available=trial_available,
                 telegram_id=user.telegram_id
             )
