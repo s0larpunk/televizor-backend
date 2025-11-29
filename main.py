@@ -983,13 +983,16 @@ async def create_stripe_checkout(request: Request):
         
         session_data = await stripe_service.create_checkout_session(
             # customer_email=f"{phone}@televizor.app",  # Removed to allow user input
-            success_url=f"{frontend_url}/subscription?success=true&session_id={{CHECKOUT_SESSION_ID}}",
-            cancel_url=f"{frontend_url}/subscription?canceled=true",
+            success_url=f"{frontend_url}/payment/stripe/success?session_id={{CHECKOUT_SESSION_ID}}",
+            cancel_url=f"{frontend_url}/payment/stripe/failure",
             metadata={
                 "phone": phone,
                 "telegram_id": str(telegram_id) if telegram_id else "",
             }
         )
+        
+        logger.info(f"Created Stripe checkout for {phone}")
+        logger.info(f"Stripe Success URL: {frontend_url}/payment/stripe/success?session_id={{CHECKOUT_SESSION_ID}}")
         
         return {
             "success": True,
@@ -1133,6 +1136,7 @@ async def create_tbank_payment(request: Request):
         )
         
         logger.info(f"Created T-Bank payment for {phone}: {order_id}")
+        logger.info(f"T-Bank Success URL: {base_url}/payment/tbank/success?OrderId={order_id}")
         
         return {
             "success": True,
@@ -1180,23 +1184,30 @@ async def tbank_webhook(request: Request):
         
         # If payment is successful (CONFIRMED or AUTHORIZED), upgrade user
         if result["is_success"] and order_id:
-            # Retrieve phone from order mapping
+            # Retrieve phone from order mapping or metadata
+            phone = None
+            
+            # 1. Try in-memory mapping
             if hasattr(app.state, 'tbank_orders') and order_id in app.state.tbank_orders:
                 phone = app.state.tbank_orders[order_id]
+                # Clean up the mapping
+                del app.state.tbank_orders[order_id]
+            
+            # 2. Try metadata from T-Bank response (DATA field)
+            if not phone and result.get("data"):
+                phone = result["data"].get("phone")
                 
+            if phone:
                 try:
                     # Upgrade user to premium
                     user_manager.upgrade_to_premium(phone, payment_method="tbank")
                     
                     logger.info(f"Upgraded user {phone} to Premium via T-Bank payment {payment_id}")
                     
-                    # Clean up the mapping
-                    del app.state.tbank_orders[order_id]
-                    
                 except Exception as e:
                     logger.error(f"Error upgrading user after T-Bank payment: {e}")
             else:
-                logger.warning(f"No phone mapping found for order_id: {order_id}")
+                logger.warning(f"No phone found for order_id: {order_id}. Metadata: {result.get('data')}")
         
         # Return OK as required by T-Bank API (no tags, uppercase)
         return PlainTextResponse("OK", status_code=200)

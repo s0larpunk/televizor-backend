@@ -258,6 +258,7 @@ class TBankPaymentService:
             "payment_id": payment_id,
             "order_id": order_id,
             "amount": amount,
+            "data": notification.get("DATA", {}),
             "is_success": status in ["CONFIRMED", "AUTHORIZED"],
         }
 
