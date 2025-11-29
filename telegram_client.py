@@ -171,6 +171,45 @@ class TelegramManager:
         """Delete the session file (logout)."""
         if self.session_file.exists():
             self.session_file.unlink()
+            
+        # Also try with .session extension
+        session_with_ext = self.session_file.with_suffix(".session")
+        if session_with_ext.exists():
+            session_with_ext.unlink()
+
+    def rename_session(self, new_user_id: str):
+        """Rename the session file to use a new user ID."""
+        new_session_file = config.SESSION_DIR / f"session_{new_user_id}"
+        
+        # Rename the base file if it exists (Telethon usually adds .session)
+        # We need to handle both cases
+        
+        old_path = self.session_file.with_suffix(".session")
+        new_path = new_session_file.with_suffix(".session")
+        
+        if old_path.exists():
+            if new_path.exists():
+                logger.warning(f"Target session file {new_path} already exists. Overwriting.")
+                new_path.unlink()
+            
+            old_path.rename(new_path)
+            logger.info(f"Renamed session from {old_path} to {new_path}")
+            
+        # Update internal state
+        self.user_id = str(new_user_id)
+        self.session_file = new_session_file
+        
+        # If client is initialized, we might need to reconnect or re-init?
+        # Telethon client holds the session filename.
+        # If we rename the file while connected, it might be fine (file handle open) or not.
+        # Safer to disconnect and reset client.
+        if self.client:
+            if self.client.is_connected():
+                # We can't easily disconnect and reconnect with new name without re-init
+                pass
+            
+            # Force re-initialization on next use
+            self.client = None
 
 
 # Global registry of active clients

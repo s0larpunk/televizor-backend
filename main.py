@@ -93,7 +93,14 @@ async def send_code(request: Request, body: models.SendCodeRequest, response: Re
         # Create a temporary session ID
         temp_session_id = str(uuid.uuid4())
         
-        manager = get_telegram_manager(body.phone)
+        # Check if we have a known Telegram ID for this phone
+        try:
+            status = user_manager.get_subscription_status(body.phone)
+            user_identifier = str(status.telegram_id) if status.telegram_id else body.phone
+        except Exception:
+            user_identifier = body.phone
+
+        manager = get_telegram_manager(user_identifier)
         result = await manager.send_code(body.phone)
         
         is_authenticated = result.get("is_authenticated", False)
@@ -153,9 +160,37 @@ async def verify_code(request: Request, body: models.VerifyCodeRequest, response
             body.phone_code_hash
         )
         
+        # Post-verification: Get Telegram ID and migrate session
+        try:
+            me = await manager.client.get_me()
+            telegram_id = me.id
+            logger.info(f"Authenticated as Telegram ID: {telegram_id}")
+            
+            # Update DB
+            user_manager.update_telegram_id(phone, telegram_id)
+            
+            # Rename session file if it's currently using phone number
+            if manager.user_id != str(telegram_id):
+                logger.info(f"Migrating session from {manager.user_id} to {telegram_id}")
+                await manager.disconnect() # Disconnect before renaming
+                manager.rename_session(str(telegram_id))
+                
+                # Update the manager in the global registry
+                from telegram_client import _active_clients
+                if phone in _active_clients:
+                    del _active_clients[phone]
+                _active_clients[str(telegram_id)] = manager
+                
+        except Exception as e:
+            logger.error(f"Error migrating to Telegram ID: {e}")
+            # Continue anyway, we can try again next time
+        
         # Update session
         sessions[session_id]["authenticated"] = True
+        sessions[session_id]["authenticated"] = True
         sessions[session_id]["expires_at"] = (datetime.now() + timedelta(days=30)).isoformat()
+        if 'telegram_id' in locals():
+            sessions[session_id]["telegram_id"] = telegram_id
         
         # Set cookie
         response.set_cookie(
@@ -1277,7 +1312,7 @@ async def create_coinbase_charge(request: Request):
             description="1 Month Premium Subscription",
             pricing_type="fixed_price",
             local_price={
-                "amount": "0.00",
+                "amount": "0.01",
                 "currency": "EUR"
             },
             metadata={

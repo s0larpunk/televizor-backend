@@ -116,7 +116,10 @@ class FeedWorker:
     async def _setup_user_handlers(self, user_id: str, feeds: list, sub_status):
         """Set up message handlers for a user's feeds."""
         try:
-            manager = get_telegram_manager(user_id)
+        try:
+            # Use Telegram ID if available, otherwise fallback to phone (user_id here is phone)
+            user_identifier = str(sub_status.telegram_id) if sub_status.telegram_id else user_id
+            manager = get_telegram_manager(user_identifier)
             
             # Check if authenticated
             if not await manager.is_authenticated():

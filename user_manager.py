@@ -46,8 +46,26 @@ class UserManager:
                 trial_start_date=user.trial_start_date.isoformat() if user.trial_start_date else None,
                 expiry_date=user.expiry_date.isoformat() if user.expiry_date else None,
                 is_expired=is_expired,
-                trial_available=trial_available
+                expiry_date=user.expiry_date.isoformat() if user.expiry_date else None,
+                is_expired=is_expired,
+                trial_available=trial_available,
+                telegram_id=user.telegram_id
             )
+        finally:
+            db.close()
+
+    def update_telegram_id(self, phone: str, telegram_id: int):
+        """Update the Telegram ID for a user."""
+        db = self.get_db()
+        try:
+            user = db.query(User).filter(User.phone == phone).first()
+            if user:
+                user.telegram_id = telegram_id
+                db.commit()
+                logger.info(f"Updated Telegram ID for {phone} to {telegram_id}")
+        except Exception as e:
+            logger.error(f"Error updating Telegram ID: {e}")
+            db.rollback()
         finally:
             db.close()
 

@@ -106,3 +106,4 @@ class SubscriptionStatus(BaseModel):
     expiry_date: Optional[str] = None
     is_expired: bool = False
     trial_available: bool = False  # True if user has never activated trial
+    telegram_id: Optional[int] = None
