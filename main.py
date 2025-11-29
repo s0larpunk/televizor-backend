@@ -145,6 +145,7 @@ async def verify_code(request: Request, body: models.VerifyCodeRequest, response
     
     try:
         phone = sessions[session_id]["phone"]
+        logger.info(f"Verifying code for phone: {phone}")
         manager = get_telegram_manager(phone)
         await manager.verify_code(
             body.phone,

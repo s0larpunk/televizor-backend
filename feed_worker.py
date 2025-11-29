@@ -51,6 +51,7 @@ class FeedWorker:
         # Group feeds by user
         feeds_by_user: Dict[str, list] = {}
         for user_id, feed in active_feeds:
+            # logger.info(f"Syncing feed for user: {repr(user_id)}")
             if user_id not in feeds_by_user:
                 feeds_by_user[user_id] = []
             feeds_by_user[user_id].append(feed)

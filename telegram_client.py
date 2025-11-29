@@ -21,6 +21,7 @@ class TelegramManager:
     async def initialize(self) -> TelegramClient:
         """Initialize the Telegram client."""
         if not self.client:
+            logger.info(f"Initializing TelegramClient with session: {self.session_file}")
             self.client = TelegramClient(
                 str(self.session_file),
                 config.TELEGRAM_API_ID,
@@ -94,7 +95,9 @@ class TelegramManager:
         if not self.client.is_connected():
             await self.client.connect()
         
-        return await self.client.is_user_authorized()
+        is_auth = await self.client.is_user_authorized()
+        logger.info(f"Checking auth for {self.user_id}. Connected: {self.client.is_connected()}. Authorized: {is_auth}")
+        return is_auth
     
     async def get_channels(self) -> List[Dict[str, any]]:
         """Get list of channels/groups the user has joined."""

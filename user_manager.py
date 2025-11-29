@@ -25,11 +25,14 @@ class UserManager:
             
             if not user:
                 # Create new user
+                logger.info(f"User {phone} not found in DB. Creating new user.")
                 referral_code = self.generate_referral_code()
                 user = User(phone=phone, tier=SubscriptionTier.FREE, referral_code=referral_code)
                 db.add(user)
                 db.commit()
                 db.refresh(user)
+            else:
+                logger.info(f"Found existing user {phone} in DB. Tier: {user.tier}, Expiry: {user.expiry_date}")
             
             is_expired = False
             trial_available = user.trial_start_date is None
