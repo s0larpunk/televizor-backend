@@ -126,6 +126,9 @@ class UserManager:
                     user.payment_method = payment_method
                 db.commit()
                 logger.info(f"Upgraded user {phone} to premium via {payment_method or 'unknown'}. New expiry: {user.expiry_date}")
+                # Double check persistence
+                db.refresh(user)
+                logger.info(f"VERIFICATION - User {phone} expiry after commit/refresh: {user.expiry_date}")
         finally:
             db.close()
 

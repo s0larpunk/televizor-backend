@@ -40,6 +40,16 @@ async def lifespan(app: FastAPI):
     
     # Startup: Start the feed worker in the background
     worker_task = asyncio.create_task(start_feed_worker())
+    
+    # Debug: Log user expiry on startup
+    try:
+        from user_manager import UserManager
+        um = UserManager()
+        status = um.get_subscription_status("+33759863632")
+        logger.info(f"STARTUP CHECK - User +33759863632 Expiry: {status.expiry_date}, Tier: {status.tier}")
+    except Exception as e:
+        logger.error(f"STARTUP CHECK FAILED: {e}")
+        
     yield
     # Shutdown: Stop the feed worker
     await stop_feed_worker()
