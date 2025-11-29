@@ -25,10 +25,8 @@ class TBankPaymentService:
         self.test_mode = getattr(config, 'TBANK_TEST_MODE', True)
         
         # API endpoints
-        if self.test_mode:
-            self.api_base = "https://rest-api-test.tinkoff.ru/v2"
-        else:
-            self.api_base = "https://securepay.tinkoff.ru/v2"
+        # T-Bank documentation recommends using securepay.tinkoff.ru for both test (with demo terminal) and production
+        self.api_base = "https://securepay.tinkoff.ru/v2"
         
         if not self.terminal_key or not self.password:
             logger.warning("T-Bank credentials not configured")
@@ -44,13 +42,21 @@ class TBankPaymentService:
             str: SHA-256 hash token
         """
         # Add password to params
-        params_with_password = {**params, 'Password': self.password}
+        token_params = params.copy()
+        token_params['Password'] = self.password
+        
+        # Remove nested objects (dict and list) as they don't participate in token generation
+        keys_to_remove = [k for k, v in token_params.items() if isinstance(v, (dict, list))]
+        for k in keys_to_remove:
+            del token_params[k]
         
         # Sort by key
-        sorted_params = sorted(params_with_password.items())
+        sorted_keys = sorted(token_params.keys())
         
-        # Concatenate values (skip None values)
-        token_string = ''.join(str(v) for k, v in sorted_params if v is not None)
+        # Concatenate values
+        token_string = ""
+        for key in sorted_keys:
+            token_string += str(token_params[key])
         
         # SHA-256 hash
         return hashlib.sha256(token_string.encode()).hexdigest()

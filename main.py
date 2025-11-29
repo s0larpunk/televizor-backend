@@ -22,7 +22,7 @@ from feed_worker import start_feed_worker, stop_feed_worker
 from telegram_payment import payment_service
 from stripe_payment import stripe_service
 from tbank_payment import tbank_service
-from tbank_payment import tbank_service
+
 from coinbase_payment import coinbase_service
 import json
 import logging
@@ -1113,8 +1113,8 @@ async def create_tbank_payment(request: Request):
             app.state.tbank_orders = {}
         app.state.tbank_orders[order_id] = phone
         
-        # Amount in kopecks (₽300.00 = 30000 kopecks)
-        amount = 30000
+        # Amount in kopecks (₽200.00 = 20000 kopecks)
+        amount = 20000
         
         # Get base URL for redirects (Frontend URL)
         # In production, this should be configured via environment variable
