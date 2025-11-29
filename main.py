@@ -9,6 +9,7 @@ import asyncio
 from contextlib import asynccontextmanager
 import os
 from database import engine, Base
+import config
 
 # Import rate limiting
 from slowapi import Limiter, _rate_limit_exceeded_handler
