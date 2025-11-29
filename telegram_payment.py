@@ -81,7 +81,8 @@ class TelegramPaymentService:
         chat_id: int,
         title: str = "Televizor Premium Subscription",
         description: str = "Unlock unlimited feeds and advanced filters",
-        payload: str = "premium_monthly"
+        payload: str = "premium_monthly",
+        price: int = 150
     ) -> Dict[str, Any]:
         """
         Create and send payment invoice to user
@@ -91,6 +92,7 @@ class TelegramPaymentService:
             title: Invoice title
             description: Invoice description
             payload: Custom payload to identify purchase
+            price: Price in Telegram Stars
             
         Returns:
             dict: Telegram API response
@@ -109,7 +111,7 @@ class TelegramPaymentService:
             "currency": "XTR",  # Telegram Stars
             "prices": json.dumps([{
                 "label": "Premium Subscription",
-                "amount": self.premium_price_stars
+                "amount": price
             }]),
             # provider_token must be omitted for XTR
             # "provider_token": "", 

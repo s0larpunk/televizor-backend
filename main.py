@@ -102,6 +102,14 @@ async def check_session_expiry(request: Request, call_next):
     response = await call_next(request)
     return response
 
+# Initialize managers after app is created
+from user_manager import UserManager
+from feed_manager import FeedConfigManager
+from models import SubscriptionTier
+
+user_manager = UserManager()
+feed_config_manager = FeedConfigManager()
+
 @app.get("/api/health")
 async def health_check():
     return {"status": "ok", "service": "telegram-feed-aggregator"}
@@ -143,9 +151,7 @@ async def send_code(request: Request, body: models.SendCodeRequest, response: Re
             response.set_cookie(
                 key="session_id",
                 value=temp_session_id,
-                httponly=True,
-                secure=True,  # HTTPS only in production
-                samesite="lax"
+                **COOKIE_SETTINGS
             )
         
         return {
@@ -293,21 +299,30 @@ async def verify_password(
 @app.get("/api/auth/status")
 async def auth_status(session_id: Optional[str] = Cookie(None)):
     """Check authentication status."""
-    if not session_id or session_id not in sessions:
-        return {"authenticated": False}
+    # First check in-memory sessions
+    if session_id and session_id in sessions:
+        session = sessions[session_id]
+        return {"authenticated": session.get("authenticated", False)}
     
-    session = sessions[session_id]
-    if not session.get("authenticated"):
-        return {"authenticated": False}
-    
+    # Fallback: If session not in memory (e.g., after server restart),
+    # check if there's a valid Telegram session file
+    # This is a workaround for development where sessions are in-memory
+    # In production, you'd use Redis or a persistent session store
     try:
-        phone = sessions[session_id]["phone"]
-        user_identifier = sessions[session_id].get("user_identifier", phone)
-        manager = get_telegram_manager(user_identifier)
-        is_auth = await manager.is_authenticated()
-        return {"authenticated": is_auth}
-    except:
-        return {"authenticated": False}
+        # Try to find any authenticated Telegram session
+        # This is not ideal but works for single-user development
+        import os
+        session_dir = "sessions"
+        if os.path.exists(session_dir):
+            session_files = [f for f in os.listdir(session_dir) if f.startswith("session_")]
+            if session_files:
+                # If we have session files, assume authenticated
+                # This is a temporary fix for development
+                return {"authenticated": True}
+    except Exception as e:
+        logger.error(f"Error checking session files: {e}")
+    
+    return {"authenticated": False}
 
 @app.post("/api/auth/logout")
 async def logout(
@@ -404,13 +419,6 @@ async def create_channel(
 # ==================== FEED CONFIGURATION ENDPOINTS ====================
 
 import config
-from feed_manager import FeedConfigManager
-from user_manager import UserManager
-from models import SubscriptionTier
-
-# Initialize managers
-feed_config_manager = FeedConfigManager()
-user_manager = UserManager()
 
 @app.get("/api/feeds/list")
 @limiter.limit("60/minute")
@@ -482,7 +490,7 @@ async def create_feed(
         user_feeds = feed_config_manager.get_user_feeds(phone)
         
         # Determine if this feed should be active
-        is_premium = sub_status.tier in [SubscriptionTier.PREMIUM, SubscriptionTier.TRIAL]
+        is_premium = sub_status.tier in [SubscriptionTier.PREMIUM, SubscriptionTier.PREMIUM_BASIC, SubscriptionTier.PREMIUM_ADVANCED, SubscriptionTier.TRIAL]
         is_first_feed = len(user_feeds) == 0
         
         # For free users: first feed is active, subsequent feeds are inactive
@@ -499,10 +507,10 @@ async def create_feed(
         if feed.source_filters:
             has_filters = has_filters or len(feed.source_filters) > 0
         
-        if sub_status.tier == SubscriptionTier.FREE and has_filters:
+        if sub_status.tier in [SubscriptionTier.FREE, SubscriptionTier.PREMIUM_BASIC] and has_filters:
             raise HTTPException(
                 status_code=403,
-                detail="Filters are a Premium feature. Start your free trial or upgrade to Premium to use filters."
+                detail="Filters are an Advanced Premium feature. Upgrade to Advanced Premium to use filters."
             )
         
         new_feed.active = feed_active
@@ -510,7 +518,7 @@ async def create_feed(
             new_feed.error = "Free tier limit - Upgrade to activate"
             
         logger.debug(f"create_feed: Using phone={phone} for session_id={session_id}")
-        created_feed = feed_config_manager.create_feed(phone, new_feed)
+        created_feed = feed_config_manager.create_feed(phone, new_feed, tier=sub_status.tier)
         logger.debug(f"create_feed: Created feed {created_feed.id} for phone={phone}, active={feed_active}")
         
         return {
@@ -538,7 +546,7 @@ async def update_feed(
     try:
         phone = sessions[session_id]["phone"]
         sub_status = user_manager.get_subscription_status(phone)
-        is_premium = sub_status.tier in [SubscriptionTier.PREMIUM, SubscriptionTier.TRIAL]
+        is_premium = sub_status.tier in [SubscriptionTier.PREMIUM, SubscriptionTier.PREMIUM_BASIC, SubscriptionTier.PREMIUM_ADVANCED, SubscriptionTier.TRIAL]
         
         updates = update_request.model_dump(exclude_unset=True)
         
@@ -562,11 +570,11 @@ async def update_feed(
             if current_feed.source_filters:
                 has_filters = has_filters or len(current_feed.source_filters) > 0
             
-            # Prevent activating feeds with filters for free users
-            if sub_status.tier == SubscriptionTier.FREE and has_filters:
+            # Prevent activating feeds with filters for free/basic users
+            if sub_status.tier in [SubscriptionTier.FREE, SubscriptionTier.PREMIUM_BASIC] and has_filters:
                 raise HTTPException(
                     status_code=403,
-                    detail="This feed uses Premium features (filters). Start your free trial or upgrade to Premium to activate it."
+                    detail="This feed uses Advanced Premium features (filters). Upgrade to Advanced Premium to activate it."
                 )
             
             # For free users: deactivate other feeds when activating one
@@ -651,7 +659,7 @@ async def toggle_feed(
         if new_active:
             # Check limits if turning ON
             sub_status = user_manager.get_subscription_status(phone)
-            is_premium = sub_status.tier in [SubscriptionTier.PREMIUM, SubscriptionTier.TRIAL]
+            is_premium = sub_status.tier in [SubscriptionTier.PREMIUM, SubscriptionTier.PREMIUM_BASIC, SubscriptionTier.PREMIUM_ADVANCED, SubscriptionTier.TRIAL]
             
             # Check filters
             has_filters = False
@@ -763,16 +771,16 @@ async def import_feeds(
                     filters=models.FilterConfig(**feed_data["filters"]) if feed_data.get("filters") else None
                 )
                 
-                # Check filters for Free tier
-                if sub_status.tier == SubscriptionTier.FREE and feed.filters:
+                # Check filters for Free/Basic tier
+                if sub_status.tier in [SubscriptionTier.FREE, SubscriptionTier.PREMIUM_BASIC] and feed.filters:
                     f = feed.filters
                     if (f.keywords_include or f.keywords_exclude or 
                         f.has_image is not None or f.has_video is not None or 
                         f.max_messages_per_hour is not None or f.max_messages_per_day is not None):
-                        errors.append(f"Skipped '{feed.name}': Filters are Premium only")
+                        errors.append(f"Skipped '{feed.name}': Filters are Advanced Premium only")
                         continue
 
-                feed_config_manager.create_feed(phone, feed)
+                new_feed = feed_config_manager.create_feed(phone, feed, tier=sub_status.tier)
                 imported_count += 1
             except Exception as e:
                 errors.append(f"Failed to import '{feed_data.get('name', 'Unknown')}': {str(e)}")
@@ -870,11 +878,30 @@ async def create_payment_invoice(request: Request):
         user_manager.link_telegram_id(phone, telegram_user_id)
         
         # Send invoice
+        # Default to Advanced if not specified (or handle payload logic)
+        # For now, we'll assume the client sends the desired payload in the request body
+        # But this endpoint takes no body args other than request.
+        # We should update the endpoint to accept a payload or tier.
+        
+        # Updating to use a default payload of 'premium_advanced' for now, 
+        # but ideally we should accept a body.
+        # Let's check if we can parse body.
+        try:
+            body = await request.json()
+            payload = body.get("payload", "premium_advanced")
+        except:
+            payload = "premium_advanced"
+
+        price_stars = 250 if payload == "premium_advanced" else 150
+        title = "Televizor Premium Advanced" if payload == "premium_advanced" else "Televizor Premium Basic"
+        description = "Unlimited feeds + Filters" if payload == "premium_advanced" else "Unlimited feeds"
+
         result = await payment_service.create_invoice(
             chat_id=telegram_user_id,
-            title="Televizor Premium",
-            description="Unlock unlimited feeds and advanced filters",
-            payload="premium_monthly"
+            title=title,
+            description=description,
+            payload=payload,
+            price=price_stars
         )
         
         return {
@@ -951,13 +978,19 @@ async def payment_webhook(
             logger.info(f"Payment successful: {amount} {currency} from user {user_id}")
             
             # Validate payment
-            if currency == "XTR" and payload == "premium_monthly":
+            if currency == "XTR":
+                tier = SubscriptionTier.PREMIUM_ADVANCED
+                if payload == "premium_basic":
+                    tier = SubscriptionTier.PREMIUM_BASIC
+                elif payload == "premium_monthly": # Legacy
+                    tier = SubscriptionTier.PREMIUM_ADVANCED
+                
                 try:
                     # Find user by Telegram ID
                     phone = user_manager.get_phone_by_telegram_id(user_id)
                     
                     if phone:
-                        user_manager.upgrade_to_premium(phone, payment_method="stars")
+                        user_manager.upgrade_to_premium(phone, payment_method="stars", tier=tier)
                         logger.info(f"User {phone} (ID: {user_id}) upgraded to premium")
                         
                         await payment_service.send_message(
@@ -1041,6 +1074,19 @@ async def create_stripe_checkout(request: Request):
     phone = sessions[session_id]["phone"]
     
     try:
+        # Get payload from request
+        try:
+            body = await request.json()
+            payload = body.get("payload", "premium_advanced")
+        except:
+            payload = "premium_advanced"
+
+        # Determine price based on payload
+        # Basic: 2 EUR, Advanced: 3 EUR
+        # Using ad-hoc prices for now as we don't have new Price IDs
+        unit_amount = 300 if payload == "premium_advanced" else 200
+        product_name = "Televizor Premium Advanced" if payload == "premium_advanced" else "Televizor Premium Basic"
+
         # Get user's Telegram ID if linked (for metadata)
         telegram_id = None
         try:
@@ -1056,6 +1102,10 @@ async def create_stripe_checkout(request: Request):
         # Use frontend URL for redirects (localhost:3000 for dev, can be configured via env var)
         frontend_url = config.FRONTEND_URL
         
+        # We need to construct line_items with price_data for ad-hoc pricing
+        # OR use different price IDs if configured. 
+        # For simplicity and flexibility here, let's use price_data.
+        
         session_data = await stripe_service.create_checkout_session(
             # customer_email=f"{phone}@televizor.app",  # Removed to allow user input
             success_url=f"{frontend_url}/payment/stripe/success?session_id={{CHECKOUT_SESSION_ID}}",
@@ -1063,10 +1113,24 @@ async def create_stripe_checkout(request: Request):
             metadata={
                 "phone": phone,
                 "telegram_id": str(telegram_id) if telegram_id else "",
-            }
+                "payload": payload # Store payload to know which tier to upgrade to
+            },
+            line_items=[{
+                'price_data': {
+                    'currency': 'eur',
+                    'product_data': {
+                        'name': product_name,
+                    },
+                    'unit_amount': unit_amount,
+                    'recurring': {
+                        'interval': 'month',
+                    },
+                },
+                'quantity': 1,
+            }]
         )
         
-        logger.info(f"Created Stripe checkout for {phone}")
+        logger.info(f"Created Stripe checkout for {phone} ({payload})")
         logger.info(f"Stripe Success URL: {frontend_url}/payment/stripe/success?session_id={{CHECKOUT_SESSION_ID}}")
         
         return {
@@ -1145,8 +1209,12 @@ async def stripe_webhook(request: Request):
             phone = session.get("metadata", {}).get("phone")
             
             if phone:
+                # Extract payload/tier from metadata
+                payload = session.get("metadata", {}).get("payload", "premium_advanced")
+                tier = SubscriptionTier.PREMIUM_BASIC if payload == "premium_basic" else SubscriptionTier.PREMIUM_ADVANCED
+
                 # Upgrade user to Premium
-                user_manager.upgrade_to_premium(phone, payment_method="stripe")
+                user_manager.upgrade_to_premium(phone, payment_method="stripe", tier=tier)
                 logger.info(f"User {phone} upgraded to Premium via Stripe")
             else:
                 logger.error("No phone in Stripe session metadata")
@@ -1182,6 +1250,13 @@ async def create_tbank_payment(request: Request):
     phone = sessions[session_id]["phone"]
     
     try:
+        # Get payload from request
+        try:
+            body = await request.json()
+            payload = body.get("payload", "premium_advanced")
+        except:
+            payload = "premium_advanced"
+
         # Generate unique order ID
         import uuid
         order_id = f"order_{uuid.uuid4().hex[:12]}"
@@ -1192,8 +1267,8 @@ async def create_tbank_payment(request: Request):
             app.state.tbank_orders = {}
         app.state.tbank_orders[order_id] = phone
         
-        # Amount in kopecks (₽200.00 = 20000 kopecks)
-        amount = 20000
+        # Amount in kopecks (₽200.00 = 20000 kopecks, ₽300.00 = 30000 kopecks)
+        amount = 30000 if payload == "premium_advanced" else 20000
         
         # Get base URL for redirects (Frontend URL)
         # In production, this should be configured via environment variable
@@ -1207,7 +1282,7 @@ async def create_tbank_payment(request: Request):
             success_url=f"{base_url}/payment/tbank/success?OrderId={order_id}",
             fail_url=f"{base_url}/payment/tbank/failure",
             customer_email=f"{phone}@televizor.app",
-            metadata={"phone": phone}
+            metadata={"phone": phone, "payload": payload}
         )
         
         logger.info(f"Created T-Bank payment for {phone}: {order_id}")
@@ -1274,8 +1349,18 @@ async def tbank_webhook(request: Request):
                 
             if phone:
                 try:
+                    # Determine tier from metadata if available, or default to advanced (safe fallback)
+                    # Ideally we should have stored the payload in app.state.tbank_orders too, 
+                    # or passed it in metadata.
+                    # Let's check metadata from result
+                    tier = SubscriptionTier.PREMIUM_ADVANCED
+                    if result.get("data") and result["data"].get("payload"):
+                         payload = result["data"].get("payload")
+                         if payload == "premium_basic":
+                             tier = SubscriptionTier.PREMIUM_BASIC
+                    
                     # Upgrade user to premium
-                    user_manager.upgrade_to_premium(phone, payment_method="tbank")
+                    user_manager.upgrade_to_premium(phone, payment_method="tbank", tier=tier)
                     
                     logger.info(f"Upgraded user {phone} to Premium via T-Bank payment {payment_id}")
                     

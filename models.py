@@ -98,6 +98,9 @@ class UpdateFeedRequest(BaseModel):
 class SubscriptionTier(str):
     FREE = "free"
     TRIAL = "trial"
+    PREMIUM_BASIC = "premium_basic"
+    PREMIUM_ADVANCED = "premium_advanced"
+    # Legacy support
     PREMIUM = "premium"
 
 class SubscriptionStatus(BaseModel):

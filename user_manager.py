@@ -37,12 +37,17 @@ class UserManager:
             is_expired = False
             trial_available = user.trial_start_date is None
             
-            if user.expiry_date and user.tier in [SubscriptionTier.TRIAL, SubscriptionTier.PREMIUM]:
+            if user.expiry_date and user.tier in [SubscriptionTier.TRIAL, SubscriptionTier.PREMIUM, SubscriptionTier.PREMIUM_BASIC, SubscriptionTier.PREMIUM_ADVANCED]:
                 if datetime.utcnow() > user.expiry_date:
                     is_expired = True
             
+            # Map legacy premium to advanced
+            tier = user.tier
+            if tier == SubscriptionTier.PREMIUM:
+                tier = SubscriptionTier.PREMIUM_ADVANCED
+
             return SubscriptionStatus(
-                tier=user.tier,
+                tier=tier,
                 trial_start_date=user.trial_start_date.isoformat() if user.trial_start_date else None,
                 expiry_date=user.expiry_date.isoformat() if user.expiry_date else None,
                 is_expired=is_expired,
@@ -108,13 +113,13 @@ class UserManager:
         finally:
             db.close()
 
-    def upgrade_to_premium(self, phone: str, payment_method: str = None):
+    def upgrade_to_premium(self, phone: str, payment_method: str = None, tier: str = SubscriptionTier.PREMIUM_ADVANCED):
         """Upgrade user to premium."""
         db = self.get_db()
         try:
             user = db.query(User).filter(User.phone == phone).first()
             if user:
-                user.tier = SubscriptionTier.PREMIUM
+                user.tier = tier
                 # Extend expiry date
                 now = datetime.utcnow()
                 if user.expiry_date and user.expiry_date > now:

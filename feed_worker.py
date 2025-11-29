@@ -6,6 +6,7 @@ from telethon import TelegramClient, events, utils
 from telegram_client import get_telegram_manager
 from feed_manager import FeedConfigManager
 from user_manager import UserManager
+from models import SubscriptionTier
 from redis_client import RateLimiter
 from tasks import forward_message_task
 import config
@@ -141,6 +142,8 @@ class FeedWorker:
                 self.active_handlers[user_id].clear()
             
             # Handle Trial Expiry
+            is_advanced = sub_status.tier in [SubscriptionTier.PREMIUM_ADVANCED, SubscriptionTier.PREMIUM, SubscriptionTier.TRIAL]
+            
             if sub_status.is_expired:
                 # Find the one allowed feed (no filters)
                 allowed_feed = None
@@ -185,6 +188,14 @@ class FeedWorker:
                             # 1. Check Source Filters & Limits
                             source_filter = feed.source_filters.get(source_channel_id) if feed.source_filters else None
                             if source_filter:
+                                if not is_advanced:
+                                    # Skip filtering for basic users (or block if filter exists? 
+                                    # Logic in main.py prevents activating feeds with filters for non-advanced.
+                                    # But if they downgrade, we should probably ignore filters or block feed.
+                                    # Let's block the feed if it has filters and user is not advanced.
+                                    logger.info(f"Skipping feed {feed.id} - Filters require Advanced Premium")
+                                    continue
+                                    
                                 if not self._check_filters(event.message, source_filter):
                                     logger.info(f"Filtered by source filter: {source_filter}")
                                     continue
@@ -194,6 +205,10 @@ class FeedWorker:
 
                             # 2. Check Global Filters & Limits
                             if feed.filters:
+                                if not is_advanced:
+                                    logger.info(f"Skipping feed {feed.id} - Filters require Advanced Premium")
+                                    continue
+
                                 if not self._check_filters(event.message, feed.filters):
                                     logger.info(f"Filtered by global filter: {feed.filters}")
                                     continue

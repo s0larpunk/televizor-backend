@@ -3,7 +3,7 @@ from typing import List, Optional, Dict
 from sqlalchemy.orm import Session
 from database import SessionLocal
 from sql_models import Feed
-from models import FeedConfig, FilterConfig
+from models import FeedConfig, FilterConfig, SubscriptionTier
 
 class FeedConfigManager:
     """Manages feed configurations (persistence via SQL)."""
@@ -56,8 +56,26 @@ class FeedConfigManager:
         finally:
             db.close()
     
-    def create_feed(self, user_id: str, feed: FeedConfig) -> FeedConfig:
+    def create_feed(self, user_id: str, feed: FeedConfig, tier: str = SubscriptionTier.FREE) -> FeedConfig:
         """Create a new feed."""
+        
+        # Enforce tier restrictions
+        has_filters = False
+        if feed.filters:
+            f = feed.filters
+            if (f.keywords_include or f.keywords_exclude or 
+                f.has_image is not None or f.has_video is not None or 
+                f.max_messages_per_hour is not None or f.max_messages_per_day is not None):
+                has_filters = True
+        
+        if feed.source_filters and len(feed.source_filters) > 0:
+            has_filters = True
+            
+        if has_filters and tier not in [SubscriptionTier.PREMIUM_ADVANCED, SubscriptionTier.TRIAL]:
+            # Allow legacy PREMIUM if mapped, but here we expect resolved tier
+            # If tier is passed as None or not passed, default to FREE which blocks filters
+            raise ValueError("Filters are an Advanced Premium feature.")
+
         db = self.get_db()
         try:
             if not feed.id:
