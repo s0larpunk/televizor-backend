@@ -68,6 +68,7 @@ class TelegramManager:
     
     async def verify_code(self, phone: str, code: str, phone_code_hash: str) -> bool:
         """Verify the authentication code."""
+        await self.ensure_connected()
         try:
             await self.client.sign_in(phone, code, phone_code_hash=phone_code_hash)
             self._is_connected = True
@@ -80,6 +81,7 @@ class TelegramManager:
     
     async def verify_password(self, password: str) -> bool:
         """Verify 2FA password if required."""
+        await self.ensure_connected()
         try:
             await self.client.sign_in(password=password)
             self._is_connected = True

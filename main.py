@@ -107,9 +107,10 @@ async def send_code(request: Request, body: models.SendCodeRequest, response: Re
         
         # Store temporary session data
         sessions[temp_session_id] = {
-            "phone": result["phone"],
+            "phone": body.phone,
+            "user_identifier": user_identifier,
             "phone_code_hash": result["phone_code_hash"],
-            "authenticated": is_authenticated,
+            "authenticated": False,
             "created_at": datetime.now().isoformat(),
             "expires_at": (datetime.now() + timedelta(days=30)).isoformat()
         }
@@ -152,8 +153,9 @@ async def verify_code(request: Request, body: models.VerifyCodeRequest, response
     
     try:
         phone = sessions[session_id]["phone"]
-        logger.info(f"Verifying code for phone: {phone}")
-        manager = get_telegram_manager(phone)
+        user_identifier = sessions[session_id].get("user_identifier", phone)
+        logger.info(f"Verifying code for phone: {phone} (identifier: {user_identifier})")
+        manager = get_telegram_manager(user_identifier)
         await manager.verify_code(
             body.phone,
             body.code,
@@ -245,7 +247,8 @@ async def verify_password(
     
     try:
         phone = sessions[session_id]["phone"]
-        manager = get_telegram_manager(phone)
+        user_identifier = sessions[session_id].get("user_identifier", phone)
+        manager = get_telegram_manager(user_identifier)
         await manager.verify_password(body.password)
         
         sessions[session_id]["authenticated"] = True
