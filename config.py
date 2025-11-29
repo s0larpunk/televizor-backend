@@ -15,6 +15,7 @@ SESSION_DIR.mkdir(exist_ok=True)
 # Server Configuration
 HOST = os.getenv("HOST", "127.0.0.1")
 PORT = int(os.getenv("PORT", "8000"))
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
 # Feed Configuration Storage
 FEEDS_CONFIG_FILE = Path("./feeds_config.json")

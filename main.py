@@ -55,7 +55,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "https://televizor.ngrok.io"], # Add your frontend URL
+    allow_origins=["http://localhost:3000", "https://televizor.ngrok.io", config.FRONTEND_URL], # Add your frontend URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -978,7 +978,7 @@ async def create_stripe_checkout(request: Request):
         
         # Create checkout session
         # Use frontend URL for redirects (localhost:3000 for dev, can be configured via env var)
-        frontend_url = "http://localhost:3000"
+        frontend_url = config.FRONTEND_URL
         
         session_data = await stripe_service.create_checkout_session(
             # customer_email=f"{phone}@televizor.app",  # Removed to allow user input
@@ -1118,7 +1118,7 @@ async def create_tbank_payment(request: Request):
         
         # Get base URL for redirects (Frontend URL)
         # In production, this should be configured via environment variable
-        base_url = "http://localhost:3000"
+        base_url = config.FRONTEND_URL
         
         # Create payment with dedicated success/failure pages
         payment_data = await tbank_service.create_payment(
