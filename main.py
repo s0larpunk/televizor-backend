@@ -47,6 +47,19 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+# Cookie Configuration
+is_production = "localhost" not in config.FRONTEND_URL and "127.0.0.1" not in config.FRONTEND_URL
+COOKIE_SETTINGS = {
+    "httponly": True,
+    "samesite": "none" if is_production else "lax",
+    "secure": True if is_production else False,
+    "max_age": 30 * 24 * 60 * 60  # 30 days
+}
+
+# Initialize Telegram Client
+# We'll initialize it lazily when needed
+# client = TelegramClient(str(config.SESSION_FILE), config.TELEGRAM_API_ID, config.TELEGRAM_API_HASH)
+
 # Initialize rate limiter
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
@@ -182,6 +195,9 @@ async def verify_code(request: Request, body: models.VerifyCodeRequest, response
                 if phone in _active_clients:
                     del _active_clients[phone]
                 _active_clients[str(telegram_id)] = manager
+            
+            # Update session identifier
+            sessions[session_id]["user_identifier"] = str(telegram_id)
                 
         except Exception as e:
             logger.error(f"Error migrating to Telegram ID: {e}")
@@ -198,9 +214,7 @@ async def verify_code(request: Request, body: models.VerifyCodeRequest, response
         response.set_cookie(
             key="session_id",
             value=session_id,
-            httponly=True,
-            samesite="lax",
-            max_age=30 * 24 * 60 * 60  # 30 days
+            **COOKIE_SETTINGS
         )
         
         # Ensure user exists and apply referral bonus if applicable
@@ -223,9 +237,7 @@ async def verify_code(request: Request, body: models.VerifyCodeRequest, response
             response.set_cookie(
                 key="session_id",
                 value=session_id,
-                httponly=True,
-                samesite="lax",
-                max_age=30 * 24 * 60 * 60  # 30 days
+                **COOKIE_SETTINGS
             )
             return {
                 "success": False,
@@ -239,6 +251,7 @@ async def verify_code(request: Request, body: models.VerifyCodeRequest, response
 async def verify_password(
     request: Request,
     body: models.VerifyPasswordRequest,
+    response: Response,
     session_id: Optional[str] = Cookie(None)
 ):
     """Verify 2FA password."""
@@ -252,6 +265,13 @@ async def verify_password(
         await manager.verify_password(body.password)
         
         sessions[session_id]["authenticated"] = True
+        
+        # Refresh cookie
+        response.set_cookie(
+            key="session_id",
+            value=session_id,
+            **COOKIE_SETTINGS
+        )
         
         return {
             "success": True,
@@ -272,7 +292,8 @@ async def auth_status(session_id: Optional[str] = Cookie(None)):
     
     try:
         phone = sessions[session_id]["phone"]
-        manager = get_telegram_manager(phone)
+        user_identifier = sessions[session_id].get("user_identifier", phone)
+        manager = get_telegram_manager(user_identifier)
         is_auth = await manager.is_authenticated()
         return {"authenticated": is_auth}
     except:
@@ -310,7 +331,8 @@ async def list_channels(session_id: Optional[str] = Cookie(None)):
     
     try:
         phone = sessions[session_id]["phone"]
-        manager = get_telegram_manager(phone)
+        user_identifier = sessions[session_id].get("user_identifier", phone)
+        manager = get_telegram_manager(user_identifier)
         channels = await manager.get_channels()
         return {"channels": channels}
     except Exception as e:
@@ -330,7 +352,8 @@ async def get_channel_photo(
     
     try:
         phone = sessions[session_id]["phone"]
-        manager = get_telegram_manager(phone)
+        user_identifier = sessions[session_id].get("user_identifier", phone)
+        manager = get_telegram_manager(user_identifier)
         photo_data = await manager.get_channel_photo(channel_id)
         
         if photo_data:
@@ -358,7 +381,8 @@ async def create_channel(
     
     try:
         phone = sessions[session_id]["phone"]
-        manager = get_telegram_manager(phone)
+        user_identifier = sessions[session_id].get("user_identifier", phone)
+        manager = get_telegram_manager(user_identifier)
         channel = await manager.create_channel(request.title, request.about)
         return {
             "success": True,
@@ -826,7 +850,8 @@ async def create_payment_invoice(request: Request):
     
     try:
         # Get user's Telegram ID from their session
-        manager = get_telegram_manager(phone)
+        user_identifier = sessions[session_id].get("user_identifier", phone)
+        manager = get_telegram_manager(user_identifier)
         client = await manager.initialize()
         me = await client.get_me()
         telegram_user_id = me.id
@@ -1009,7 +1034,8 @@ async def create_stripe_checkout(request: Request):
         # Get user's Telegram ID if linked (for metadata)
         telegram_id = None
         try:
-            manager = get_telegram_manager(phone)
+            user_identifier = sessions[session_id].get("user_identifier", phone)
+            manager = get_telegram_manager(user_identifier)
             client = await manager.initialize()
             me = await client.get_me()
             telegram_id = me.id
