@@ -135,6 +135,8 @@ class TBankPaymentService:
                 response = await client.post(url, json=params, headers=headers)
                 
                 try:
+                    # Log the raw response for debugging
+                    logger.info(f"T-Bank Init response: {response.text}")
                     result = response.json()
                 except Exception:
                     logger.error(f"Failed to decode T-Bank response: {response.status_code} - {response.text}")
@@ -185,6 +187,8 @@ class TBankPaymentService:
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(url, json=params)
+                # Log the raw response for debugging
+                logger.info(f"T-Bank GetState response: {response.text}")
                 result = response.json()
                 
                 if not result.get("Success"):
