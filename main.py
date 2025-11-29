@@ -1277,7 +1277,7 @@ async def create_coinbase_charge(request: Request):
             description="1 Month Premium Subscription",
             pricing_type="fixed_price",
             local_price={
-                "amount": "2.00",
+                "amount": "0.00",
                 "currency": "EUR"
             },
             metadata={
