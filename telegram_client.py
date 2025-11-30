@@ -24,6 +24,7 @@ class TelegramManager:
         if not self.client:
             logger.info(f"Initializing TelegramClient for user {self.user_id}")
             # Use StringSession if available, otherwise create new one
+            # Note: session_string is passed from outside, which comes from DB via user_manager.get_session(..., instance_id)
             session = StringSession(self.session_string) if self.session_string else StringSession()
             
             self.client = TelegramClient(

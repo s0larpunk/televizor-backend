@@ -39,3 +39,19 @@ class Feed(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     owner = relationship("User", back_populates="feeds")
+
+class UserSession(Base):
+    __tablename__ = "user_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_phone = Column(String, ForeignKey("users.phone"), nullable=False)
+    session_string = Column(String, nullable=False)
+    instance_id = Column(String, default="default", nullable=False)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    last_used_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    # Relationship
+    user = relationship("User", back_populates="sessions")
+
+# Update User to have relationship
+User.sessions = relationship("UserSession", back_populates="user", cascade="all, delete-orphan")

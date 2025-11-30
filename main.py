@@ -211,8 +211,8 @@ async def verify_code(request: Request, body: models.VerifyCodeRequest, response
             # Save session string to DB for persistence
             session_string = await manager.get_session_string()
             if session_string:
-                user_manager.save_session(phone, session_string)
-                logger.info(f"Session string saved for phone: {phone}")
+                user_manager.save_session(phone, session_string, instance_id=config.INSTANCE_ID)
+                logger.info(f"Session string saved for phone: {phone} (instance: {config.INSTANCE_ID})")
                 
         except Exception as e:
             logger.error(f"Error migrating to Telegram ID: {e}")
@@ -282,8 +282,8 @@ async def verify_password(
         # After successful verification, save the session string
         session_string = await manager.get_session_string()
         if session_string:
-            user_manager.save_session(phone, session_string)
-            logger.info(f"Session string saved for phone: {phone}")
+            user_manager.save_session(phone, session_string, instance_id=config.INSTANCE_ID)
+            logger.info(f"Session string saved for phone: {phone} (instance: {config.INSTANCE_ID})")
         
         sessions[session_id]["authenticated"] = True
         
@@ -324,6 +324,7 @@ async def logout(
         
         manager = get_telegram_manager(phone)
         manager.delete_session()
+        user_manager.delete_session(phone, instance_id=config.INSTANCE_ID)
         await cleanup_client(phone)
         
         response.delete_cookie("session_id")

@@ -112,24 +112,72 @@ class UserManager:
         finally:
             db.close()
 
-    def save_session(self, phone: str, session_string: str):
+    def save_session(self, phone: str, session_string: str, instance_id: str = "default"):
         """Save Telegram session string for a user."""
         db = self.get_db()
         try:
-            user = db.query(User).filter(User.phone == phone).first()
-            if user:
-                user.session_string = session_string
-                db.commit()
-                logger.info(f"Saved session string for user {phone}")
+            # Upsert session
+            from sql_models import UserSession
+            session = db.query(UserSession).filter(
+                UserSession.user_phone == phone,
+                UserSession.instance_id == instance_id
+            ).first()
+            
+            if session:
+                session.session_string = session_string
+                session.last_used_at = datetime.utcnow()
+            else:
+                session = UserSession(
+                    user_phone=phone,
+                    session_string=session_string,
+                    instance_id=instance_id
+                )
+                db.add(session)
+            
+            db.commit()
+            logger.info(f"Saved session string for user {phone} (instance: {instance_id})")
         finally:
             db.close()
 
-    def get_session(self, phone: str) -> Optional[str]:
+    def get_session(self, phone: str, instance_id: str = "default") -> Optional[str]:
         """Get Telegram session string for a user."""
         db = self.get_db()
         try:
-            user = db.query(User).filter(User.phone == phone).first()
-            return user.session_string if user else None
+            from sql_models import UserSession
+            session = db.query(UserSession).filter(
+                UserSession.user_phone == phone,
+                UserSession.instance_id == instance_id
+            ).first()
+            
+            if session:
+                # Update last used
+                session.last_used_at = datetime.utcnow()
+                db.commit()
+                return session.session_string
+            
+            # Fallback to legacy session_string in users table if not found in default instance
+            if instance_id == "default":
+                user = db.query(User).filter(User.phone == phone).first()
+                if user and user.session_string:
+                    # Migrate on the fly? No, let migration script handle it.
+                    # Just return it for now to be safe
+                    return user.session_string
+                    
+            return None
+        finally:
+            db.close()
+
+    def delete_session(self, phone: str, instance_id: str = "default"):
+        """Delete a session."""
+        db = self.get_db()
+        try:
+            from sql_models import UserSession
+            db.query(UserSession).filter(
+                UserSession.user_phone == phone,
+                UserSession.instance_id == instance_id
+            ).delete()
+            db.commit()
+            logger.info(f"Deleted session for user {phone} (instance: {instance_id})")
         finally:
             db.close()
 

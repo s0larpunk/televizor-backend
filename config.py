@@ -17,6 +17,14 @@ HOST = os.getenv("HOST", "127.0.0.1")
 PORT = int(os.getenv("PORT", "8000"))
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
+# Auto-detect local environment
+INSTANCE_ID = os.getenv("INSTANCE_ID")
+if not INSTANCE_ID:
+    if "localhost" in FRONTEND_URL or "127.0.0.1" in FRONTEND_URL:
+        INSTANCE_ID = "local"
+    else:
+        INSTANCE_ID = "default"
+
 # Feed Configuration Storage
 FEEDS_CONFIG_FILE = Path("./feeds_config.json")
 
