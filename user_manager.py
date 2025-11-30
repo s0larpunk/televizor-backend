@@ -104,6 +104,35 @@ class UserManager:
         finally:
             db.close()
 
+    def get_user_by_phone(self, phone: str) -> Optional[User]:
+        """Get user by phone number."""
+        db = self.get_db()
+        try:
+            return db.query(User).filter(User.phone == phone).first()
+        finally:
+            db.close()
+
+    def save_session(self, phone: str, session_string: str):
+        """Save Telegram session string for a user."""
+        db = self.get_db()
+        try:
+            user = db.query(User).filter(User.phone == phone).first()
+            if user:
+                user.session_string = session_string
+                db.commit()
+                logger.info(f"Saved session string for user {phone}")
+        finally:
+            db.close()
+
+    def get_session(self, phone: str) -> Optional[str]:
+        """Get Telegram session string for a user."""
+        db = self.get_db()
+        try:
+            user = db.query(User).filter(User.phone == phone).first()
+            return user.session_string if user else None
+        finally:
+            db.close()
+
     def get_phone_by_telegram_id(self, telegram_id: int) -> Optional[str]:
         """Find phone number associated with a Telegram ID."""
         db = self.get_db()
@@ -113,7 +142,7 @@ class UserManager:
         finally:
             db.close()
 
-    def upgrade_to_premium(self, phone: str, payment_method: str = None, tier: str = SubscriptionTier.PREMIUM_ADVANCED):
+    def upgrade_to_premium(self, phone: str, payment_method: str = None, tier: str = SubscriptionTier.PREMIUM_ADVANCED, duration_days: int = 30, stripe_customer_id: str = None, stripe_subscription_id: str = None):
         """Upgrade user to premium."""
         db = self.get_db()
         try:
@@ -123,14 +152,20 @@ class UserManager:
                 # Extend expiry date
                 now = datetime.utcnow()
                 if user.expiry_date and user.expiry_date > now:
-                    user.expiry_date += timedelta(days=30)
+                    user.expiry_date += timedelta(days=duration_days)
                 else:
-                    user.expiry_date = now + timedelta(days=30)
+                    user.expiry_date = now + timedelta(days=duration_days)
                 
                 if payment_method:
                     user.payment_method = payment_method
+                
+                if stripe_customer_id:
+                    user.stripe_customer_id = stripe_customer_id
+                if stripe_subscription_id:
+                    user.stripe_subscription_id = stripe_subscription_id
+
                 db.commit()
-                logger.info(f"Upgraded user {phone} to premium via {payment_method or 'unknown'}. New expiry: {user.expiry_date}")
+                logger.info(f"Upgraded user {phone} to premium via {payment_method or 'unknown'} for {duration_days} days. New expiry: {user.expiry_date}")
                 # Double check persistence
                 db.refresh(user)
                 logger.info(f"VERIFICATION - User {phone} expiry after commit/refresh: {user.expiry_date}")
@@ -254,7 +289,7 @@ class UserManager:
             for u in [user, referrer]:
                 # If free, upgrade to trial/premium
                 if u.tier == SubscriptionTier.FREE:
-                    u.tier = SubscriptionTier.TRIAL # Or PREMIUM, effectively same access
+                    u.tier = SubscriptionTier.PREMIUM_ADVANCED # Explicitly set to Advanced
                     u.expiry_date = datetime.utcnow() + timedelta(days=bonus_days)
                     u.trial_start_date = datetime.utcnow() # Mark trial as started
                 else:
@@ -263,6 +298,13 @@ class UserManager:
                         u.expiry_date += timedelta(days=bonus_days)
                     else:
                         u.expiry_date = datetime.utcnow() + timedelta(days=bonus_days)
+                    
+                    # Upgrade to Advanced if on Basic? 
+                    # User request: "referral upgrades both users for Premium Advanced"
+                    # So if they are on Basic, we should probably upgrade them too?
+                    # Let's assume yes for now to be generous and match "upgrades both users"
+                    if u.tier == SubscriptionTier.PREMIUM_BASIC:
+                        u.tier = SubscriptionTier.PREMIUM_ADVANCED
             
             db.commit()
             logger.info(f"Applied referral bonus: {referrer.phone} -> {user.phone}")

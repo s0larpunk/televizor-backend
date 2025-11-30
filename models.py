@@ -110,3 +110,6 @@ class SubscriptionStatus(BaseModel):
     is_expired: bool = False
     trial_available: bool = False  # True if user has never activated trial
     telegram_id: Optional[int] = None
+
+class CreateCoinbaseChargeRequest(BaseModel):
+    payload: str = "premium_advanced"

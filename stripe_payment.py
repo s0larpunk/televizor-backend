@@ -183,5 +183,50 @@ class StripePaymentService:
         }
 
 
+    def modify_subscription(self, subscription_id: str, new_price_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Modify a subscription to a new price with NO proration.
+        
+        Args:
+            subscription_id: The ID of the subscription to modify
+            new_price_data: The new price data (amount, interval, product name)
+            
+        Returns:
+            dict: The updated subscription object
+        """
+        if not self.api_key:
+            raise Exception("Stripe not configured")
+            
+        try:
+            # Get the subscription to find the item ID
+            sub = stripe.Subscription.retrieve(subscription_id)
+            item_id = sub['items']['data'][0]['id']
+            
+            # Update the subscription
+            updated_sub = stripe.Subscription.modify(
+                subscription_id,
+                items=[{
+                    'id': item_id,
+                    'price_data': {
+                        'currency': 'eur',
+                        'product_data': {
+                            'name': new_price_data['product_name'],
+                        },
+                        'unit_amount': new_price_data['unit_amount'],
+                        'recurring': {
+                            'interval': new_price_data['interval'],
+                        },
+                    },
+                }],
+                proration_behavior='none', # CRITICAL: No proration
+            )
+            
+            logger.info(f"Modified subscription {subscription_id} to new price")
+            return updated_sub
+            
+        except Exception as e:
+            logger.error(f"Error modifying subscription: {e}")
+            raise
+
 # Global Stripe service instance
 stripe_service = StripePaymentService()

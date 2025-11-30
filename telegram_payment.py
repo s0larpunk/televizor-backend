@@ -82,7 +82,8 @@ class TelegramPaymentService:
         title: str = "Televizor Premium Subscription",
         description: str = "Unlock unlimited feeds and advanced filters",
         payload: str = "premium_monthly",
-        price: int = 150
+        price: int = 150,
+        photo_url: str = "https://em-content.zobj.net/source/apple/81/television_1f4fa.png"
     ) -> Dict[str, Any]:
         """
         Create and send payment invoice to user
@@ -93,6 +94,7 @@ class TelegramPaymentService:
             description: Invoice description
             payload: Custom payload to identify purchase
             price: Price in Telegram Stars
+            photo_url: URL of the product image
             
         Returns:
             dict: Telegram API response
@@ -117,7 +119,7 @@ class TelegramPaymentService:
             # "provider_token": "", 
             # Optional parameters
             "start_parameter": "premium_upgrade",
-            "photo_url": "https://example.com/premium-icon.png",  # Optional: Add your logo
+            "photo_url": photo_url,
             "photo_width": 512,
             "photo_height": 512,
         }

@@ -2,6 +2,7 @@ from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError
 from telethon.tl.functions.channels import CreateChannelRequest
 from telethon.tl.types import Channel, ChatPhotoEmpty, UserProfilePhotoEmpty
+from telethon.sessions import StringSession
 from typing import Optional, List, Dict
 import asyncio
 from pathlib import Path
@@ -12,18 +13,21 @@ logger = logging.getLogger(__name__)
 class TelegramManager:
     """Manages Telegram client sessions and operations."""
     
-    def __init__(self, user_id: str):
+    def __init__(self, user_id: str, session_string: str = None):
         self.user_id = user_id
-        self.session_file = config.SESSION_DIR / f"session_{user_id}"
+        self.session_string = session_string
         self.client: Optional[TelegramClient] = None
         self._is_connected = False
         
     async def initialize(self) -> TelegramClient:
         """Initialize the Telegram client."""
         if not self.client:
-            logger.info(f"Initializing TelegramClient with session: {self.session_file}")
+            logger.info(f"Initializing TelegramClient for user {self.user_id}")
+            # Use StringSession if available, otherwise create new one
+            session = StringSession(self.session_string) if self.session_string else StringSession()
+            
             self.client = TelegramClient(
-                str(self.session_file),
+                session,
                 config.TELEGRAM_API_ID,
                 config.TELEGRAM_API_HASH
             )
@@ -89,6 +93,12 @@ class TelegramManager:
         except Exception as e:
             raise Exception(f"Password verification failed: {str(e)}")
     
+    async def get_session_string(self) -> str:
+        """Get the current session string."""
+        if not self.client:
+            return None
+        return StringSession.save(self.client.session)
+
     async def is_authenticated(self) -> bool:
         """Check if user is authenticated."""
         if not self.client:
@@ -109,10 +119,12 @@ class TelegramManager:
         dialogs = await self.client.get_dialogs()
         channels = []
         
+        from telethon.tl.types import Channel, Chat
+        
         for dialog in dialogs:
             entity = dialog.entity
             # Include channels, supergroups, and groups
-            if isinstance(entity, Channel) or hasattr(entity, 'megagroup'):
+            if isinstance(entity, Channel) or isinstance(entity, Chat):
                 # Check if photo exists and is not empty
                 has_photo = hasattr(entity, 'photo') and entity.photo is not None and not isinstance(entity.photo, ChatPhotoEmpty) and not isinstance(entity.photo, UserProfilePhotoEmpty)
                 
@@ -124,6 +136,8 @@ class TelegramManager:
                     "member_count": getattr(entity, 'participants_count', None),
                     "has_photo": has_photo
                 })
+                # Debug logging
+                # logger.info(f"Channel {entity.title} -> ID: {entity.id}")
         
         return channels
     
@@ -162,65 +176,102 @@ class TelegramManager:
         except Exception as e:
             logger.error(f"Error fetching photo for {channel_id}: {e}")
             return None
+
+    async def get_dialog_filters(self) -> List[Dict[str, any]]:
+        """Get list of dialog filters (folders)."""
+        if not await self.is_authenticated():
+            raise Exception("Not authenticated")
+        
+        from telethon.tl.functions.messages import GetDialogFiltersRequest
+        from telethon.tl.types import DialogFilter, DialogFilterChatlist, DialogFilterDefault, PeerChannel, PeerChat, InputPeerChannel, InputPeerChat
+        from telethon import utils
+        
+        result = await self.client(GetDialogFiltersRequest())
+        
+        # Handle different return types (Vector vs messages.DialogFilters)
+        if hasattr(result, 'filters'):
+            filters_list = result.filters
+        else:
+            filters_list = result
+            
+        filters = []
+        for f in filters_list:
+            # Skip default "All Chats" filter
+            if isinstance(f, DialogFilterDefault):
+                continue
+                
+            # Helper to get title string
+            title = getattr(f, 'title', 'Unknown Folder')
+            if hasattr(title, 'text'):
+                title = title.text
+                
+            if isinstance(f, DialogFilter):
+                included_peers = []
+                for peer in f.include_peers:
+                    peer_id = utils.get_peer_id(peer)
+                    
+                    # Normalize ID: remove -100 prefix for channels if present
+                    # We need bare IDs to match get_channels output
+                    
+                    raw_id = peer_id
+                    
+                    # Handle InputPeer types which are common in DialogFilters
+                    if isinstance(peer, (PeerChannel, InputPeerChannel)):
+                         if hasattr(peer, 'channel_id'):
+                             raw_id = peer.channel_id
+                    elif isinstance(peer, (PeerChat, InputPeerChat)):
+                         if hasattr(peer, 'chat_id'):
+                             raw_id = peer.chat_id
+                    
+                    # Fallback: if utils.get_peer_id returned a marked ID (starts with -100), try to strip it
+                    # This is a safety net if the above types didn't catch it
+                    if isinstance(raw_id, int) and raw_id < 0:
+                        # Convert -1001234567890 to 1234567890
+                        s_id = str(raw_id)
+                        if s_id.startswith("-100"):
+                            try:
+                                raw_id = int(s_id[4:])
+                            except:
+                                pass
+                        elif s_id.startswith("-"):
+                             try:
+                                raw_id = int(s_id[1:])
+                             except:
+                                pass
+                    
+                    # Debug logging
+                    logger.info(f"Folder {title} peer: {peer} -> ID: {peer_id} -> Raw: {raw_id}")
+                    included_peers.append(raw_id)
+                
+                filters.append({
+                    "id": f.id,
+                    "title": title,
+                    "included_peers": included_peers
+                })
+            elif isinstance(f, DialogFilterChatlist):
+                 filters.append({
+                    "id": f.id,
+                    "title": title,
+                    "type": "chatlist",
+                    "included_peers": [utils.get_peer_id(p) for p in f.include_peers]
+                 })
+                 
+        return filters
     
     async def disconnect(self):
         """Disconnect the client."""
         if self.client and self.client.is_connected():
             await self.client.disconnect()
             self._is_connected = False
-    
-    def delete_session(self):
-        """Delete the session file (logout)."""
-        if self.session_file.exists():
-            self.session_file.unlink()
-            
-        # Also try with .session extension
-        session_with_ext = self.session_file.with_suffix(".session")
-        if session_with_ext.exists():
-            session_with_ext.unlink()
-
-    def rename_session(self, new_user_id: str):
-        """Rename the session file to use a new user ID."""
-        new_session_file = config.SESSION_DIR / f"session_{new_user_id}"
-        
-        # Rename the base file if it exists (Telethon usually adds .session)
-        # We need to handle both cases
-        
-        old_path = self.session_file.with_suffix(".session")
-        new_path = new_session_file.with_suffix(".session")
-        
-        if old_path.exists():
-            if new_path.exists():
-                logger.warning(f"Target session file {new_path} already exists. Overwriting.")
-                new_path.unlink()
-            
-            old_path.rename(new_path)
-            logger.info(f"Renamed session from {old_path} to {new_path}")
-            
-        # Update internal state
-        self.user_id = str(new_user_id)
-        self.session_file = new_session_file
-        
-        # If client is initialized, we might need to reconnect or re-init?
-        # Telethon client holds the session filename.
-        # If we rename the file while connected, it might be fine (file handle open) or not.
-        # Safer to disconnect and reset client.
-        if self.client:
-            if self.client.is_connected():
-                # We can't easily disconnect and reconnect with new name without re-init
-                pass
-            
-            # Force re-initialization on next use
-            self.client = None
 
 
 # Global registry of active clients
 _active_clients: Dict[str, TelegramManager] = {}
 
-def get_telegram_manager(user_id: str) -> TelegramManager:
+def get_telegram_manager(user_id: str, session_string: str = None) -> TelegramManager:
     """Get or create a TelegramManager for a user."""
     if user_id not in _active_clients:
-        _active_clients[user_id] = TelegramManager(user_id)
+        _active_clients[user_id] = TelegramManager(user_id, session_string)
     return _active_clients[user_id]
 
 async def cleanup_client(user_id: str):

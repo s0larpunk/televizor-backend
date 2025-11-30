@@ -12,6 +12,9 @@ class User(Base):
     trial_start_date = Column(DateTime, nullable=True)
     expiry_date = Column(DateTime, nullable=True)
     payment_method = Column(String, nullable=True)  # stripe, tbank, stars, crypto
+    stripe_customer_id = Column(String, nullable=True)
+    stripe_subscription_id = Column(String, nullable=True)
+    session_string = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     
     referral_code = Column(String, unique=True, index=True, nullable=True)

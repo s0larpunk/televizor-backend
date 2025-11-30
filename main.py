@@ -41,14 +41,7 @@ async def lifespan(app: FastAPI):
     # Startup: Start the feed worker in the background
     worker_task = asyncio.create_task(start_feed_worker())
     
-    # Debug: Log user expiry on startup
-    try:
-        from user_manager import UserManager
-        um = UserManager()
-        status = um.get_subscription_status("+33759863632")
-        logger.info(f"STARTUP CHECK - User +33759863632 Expiry: {status.expiry_date}, Tier: {status.tier}")
-    except Exception as e:
-        logger.error(f"STARTUP CHECK FAILED: {e}")
+    # Debug: Log user expiry on startup - REMOVED
         
     yield
     # Shutdown: Stop the feed worker
@@ -67,8 +60,8 @@ COOKIE_SETTINGS = {
 }
 
 # Initialize Telegram Client
+# Initialize Telegram Client
 # We'll initialize it lazily when needed
-# client = TelegramClient(str(config.SESSION_FILE), config.TELEGRAM_API_ID, config.TELEGRAM_API_HASH)
 
 # Initialize rate limiter
 limiter = Limiter(key_func=get_remote_address)
@@ -85,7 +78,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Apply x402 middleware
 # Apply x402 middleware - REMOVED
 
 # Simple session storage (in production, use Redis or similar)
@@ -148,6 +140,7 @@ async def send_code(request: Request, body: models.SendCodeRequest, response: Re
         
         # If already authenticated, set the cookie immediately
         if is_authenticated:
+            sessions[temp_session_id]["authenticated"] = True
             response.set_cookie(
                 key="session_id",
                 value=temp_session_id,
@@ -214,6 +207,12 @@ async def verify_code(request: Request, body: models.VerifyCodeRequest, response
             
             # Update session identifier
             sessions[session_id]["user_identifier"] = str(telegram_id)
+            
+            # Save session string to DB for persistence
+            session_string = await manager.get_session_string()
+            if session_string:
+                user_manager.save_session(phone, session_string)
+                logger.info(f"Session string saved for phone: {phone}")
                 
         except Exception as e:
             logger.error(f"Error migrating to Telegram ID: {e}")
@@ -280,6 +279,12 @@ async def verify_password(
         manager = get_telegram_manager(user_identifier)
         await manager.verify_password(body.password)
         
+        # After successful verification, save the session string
+        session_string = await manager.get_session_string()
+        if session_string:
+            user_manager.save_session(phone, session_string)
+            logger.info(f"Session string saved for phone: {phone}")
+        
         sessions[session_id]["authenticated"] = True
         
         # Refresh cookie
@@ -303,24 +308,6 @@ async def auth_status(session_id: Optional[str] = Cookie(None)):
     if session_id and session_id in sessions:
         session = sessions[session_id]
         return {"authenticated": session.get("authenticated", False)}
-    
-    # Fallback: If session not in memory (e.g., after server restart),
-    # check if there's a valid Telegram session file
-    # This is a workaround for development where sessions are in-memory
-    # In production, you'd use Redis or a persistent session store
-    try:
-        # Try to find any authenticated Telegram session
-        # This is not ideal but works for single-user development
-        import os
-        session_dir = "sessions"
-        if os.path.exists(session_dir):
-            session_files = [f for f in os.listdir(session_dir) if f.startswith("session_")]
-            if session_files:
-                # If we have session files, assume authenticated
-                # This is a temporary fix for development
-                return {"authenticated": True}
-    except Exception as e:
-        logger.error(f"Error checking session files: {e}")
     
     return {"authenticated": False}
 
@@ -360,6 +347,24 @@ async def list_channels(session_id: Optional[str] = Cookie(None)):
         manager = get_telegram_manager(user_identifier)
         channels = await manager.get_channels()
         return {"channels": channels}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/folders/list")
+async def list_folders(session_id: Optional[str] = Cookie(None)):
+    """List all folders (dialog filters) the user has created."""
+    if not session_id or session_id not in sessions:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    if not sessions[session_id].get("authenticated"):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    try:
+        phone = sessions[session_id]["phone"]
+        user_identifier = sessions[session_id].get("user_identifier", phone)
+        manager = get_telegram_manager(user_identifier)
+        folders = await manager.get_dialog_filters()
+        return {"folders": folders}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -852,6 +857,21 @@ async def get_referral_info(request: Request):
         
     return info
 
+async def get_tm(request: Request):
+    """Dependency to get TelegramManager for current user."""
+    session_id = request.cookies.get("session_id")
+    if not session_id or session_id not in sessions:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    phone = sessions[session_id]["phone"]
+    
+    # Load session string from DB
+    session_string = user_manager.get_session(phone)
+    
+    # Pass session_string to get_telegram_manager
+    # If session_string is None, it will create a new empty session (which is fine, user might need to re-login if DB is empty)
+    return get_telegram_manager(phone, session_string)
+
 @app.post("/api/payment/create-invoice")
 @limiter.limit("10/minute")
 async def create_payment_invoice(request: Request):
@@ -892,9 +912,23 @@ async def create_payment_invoice(request: Request):
         except:
             payload = "premium_advanced"
 
-        price_stars = 250 if payload == "premium_advanced" else 150
-        title = "Televizor Premium Advanced" if payload == "premium_advanced" else "Televizor Premium Basic"
-        description = "Unlimited feeds + Filters" if payload == "premium_advanced" else "Unlimited feeds"
+        if payload == "premium_advanced_year":
+            price_stars = 2500
+            title = "Televizor Premium Advanced (Yearly)"
+            description = "Unlimited feeds + Filters (1 Year)"
+        elif payload == "premium_basic_year":
+            price_stars = 1500
+            title = "Televizor Premium Basic (Yearly)"
+            description = "Unlimited feeds (1 Year)"
+        elif payload == "premium_basic":
+            price_stars = 150
+            title = "Televizor Premium Basic"
+            description = "Unlimited feeds"
+        else:
+            # Default to advanced monthly
+            price_stars = 250
+            title = "Televizor Premium Advanced"
+            description = "Unlimited feeds + Filters"
 
         result = await payment_service.create_invoice(
             chat_id=telegram_user_id,
@@ -980,8 +1014,16 @@ async def payment_webhook(
             # Validate payment
             if currency == "XTR":
                 tier = SubscriptionTier.PREMIUM_ADVANCED
+                duration_days = 30
+                
                 if payload == "premium_basic":
                     tier = SubscriptionTier.PREMIUM_BASIC
+                elif payload == "premium_basic_year":
+                    tier = SubscriptionTier.PREMIUM_BASIC
+                    duration_days = 365
+                elif payload == "premium_advanced_year":
+                    tier = SubscriptionTier.PREMIUM_ADVANCED
+                    duration_days = 365
                 elif payload == "premium_monthly": # Legacy
                     tier = SubscriptionTier.PREMIUM_ADVANCED
                 
@@ -990,7 +1032,7 @@ async def payment_webhook(
                     phone = user_manager.get_phone_by_telegram_id(user_id)
                     
                     if phone:
-                        user_manager.upgrade_to_premium(phone, payment_method="stars", tier=tier)
+                        user_manager.upgrade_to_premium(phone, payment_method="stars", tier=tier, duration_days=duration_days)
                         logger.info(f"User {phone} (ID: {user_id}) upgraded to premium")
                         
                         await payment_service.send_message(
@@ -1083,9 +1125,22 @@ async def create_stripe_checkout(request: Request):
 
         # Determine price based on payload
         # Basic: 2 EUR, Advanced: 3 EUR
-        # Using ad-hoc prices for now as we don't have new Price IDs
-        unit_amount = 300 if payload == "premium_advanced" else 200
-        product_name = "Televizor Premium Advanced" if payload == "premium_advanced" else "Televizor Premium Basic"
+        # Basic Year: 20 EUR, Advanced Year: 30 EUR
+        unit_amount = 300
+        product_name = "Televizor Premium Advanced"
+        interval = "month"
+        
+        if payload == "premium_basic":
+            unit_amount = 200
+            product_name = "Televizor Premium Basic"
+        elif payload == "premium_basic_year":
+            unit_amount = 2000
+            product_name = "Televizor Premium Basic (Yearly)"
+            interval = "year"
+        elif payload == "premium_advanced_year":
+            unit_amount = 3000
+            product_name = "Televizor Premium Advanced (Yearly)"
+            interval = "year"
 
         # Get user's Telegram ID if linked (for metadata)
         telegram_id = None
@@ -1123,7 +1178,7 @@ async def create_stripe_checkout(request: Request):
                     },
                     'unit_amount': unit_amount,
                     'recurring': {
-                        'interval': 'month',
+                        'interval': interval,
                     },
                 },
                 'quantity': 1,
@@ -1143,6 +1198,65 @@ async def create_stripe_checkout(request: Request):
         logger.error(f"Error creating Stripe checkout: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.post("/api/payment/stripe-upgrade-checkout")
+@limiter.limit("10/minute")
+async def create_upgrade_checkout(request: Request):
+    """
+    Create a one-time checkout session for upgrading to Advanced (€1.00)
+    """
+    session_id = request.cookies.get("session_id")
+    if not session_id or session_id not in sessions:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    phone = sessions[session_id]["phone"]
+    
+    try:
+        # Get user to find existing subscription
+        user = user_manager.get_user_by_phone(phone)
+        if not user or not user.stripe_subscription_id:
+            raise HTTPException(status_code=400, detail="No active Stripe subscription found to upgrade")
+            
+        if user.tier == SubscriptionTier.PREMIUM_ADVANCED:
+             raise HTTPException(status_code=400, detail="Already on Advanced plan")
+
+        # Create one-time payment session for €1.00
+        frontend_url = config.FRONTEND_URL
+        
+        session_data = await stripe_service.create_checkout_session(
+            success_url=f"{frontend_url}/payment/stripe/success?session_id={{CHECKOUT_SESSION_ID}}&upgrade=true",
+            cancel_url=f"{frontend_url}/payment/stripe/failure",
+            metadata={
+                "phone": phone,
+                "type": "upgrade_fee",
+                "subscription_id": user.stripe_subscription_id
+            },
+            line_items=[{
+                'price_data': {
+                    'currency': 'eur',
+                    'product_data': {
+                        'name': "Upgrade to Premium Advanced (Immediate Access)",
+                        'description': "One-time upgrade fee. Future renewals will be at €3/month."
+                    },
+                    'unit_amount': 100, # €1.00
+                },
+                'quantity': 1,
+            }]
+        )
+        
+        logger.info(f"Created Upgrade checkout for {phone}")
+        
+        return {
+            "success": True,
+            "session_id": session_data["session_id"],
+            "url": session_data["url"]
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating upgrade checkout: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/payment/stripe-verify")
 async def verify_stripe_payment(
@@ -1208,16 +1322,64 @@ async def stripe_webhook(request: Request):
             # Extract phone from metadata
             phone = session.get("metadata", {}).get("phone")
             
-            if phone:
+            if not phone:
+                logger.error("No phone in Stripe session metadata")
+                return {"ok": True}
+            
+            # Check if this is an upgrade fee payment
+            if session.get("metadata", {}).get("type") == "upgrade_fee":
+                subscription_id = session.get("metadata", {}).get("subscription_id")
+                logger.info(f"Processing upgrade fee for {phone}, sub {subscription_id}")
+                
+                if subscription_id:
+                    # Modify the existing subscription to Advanced (€3)
+                    await stripe_service.modify_subscription(
+                        subscription_id,
+                        new_price_data={
+                            'unit_amount': 300, # €3.00
+                            'interval': 'month',
+                            'product_name': 'Televizor Premium Advanced'
+                        }
+                    )
+                    
+                    # Update local user tier
+                    user_manager.upgrade_to_premium(
+                        phone, 
+                        payment_method="stripe", 
+                        tier=SubscriptionTier.PREMIUM_ADVANCED,
+                        duration_days=0 # Don't extend expiry, just change tier (expiry is managed by Stripe cycle)
+                    )
+                    logger.info(f"Successfully upgraded {phone} to Advanced")
+            else:
+                # Regular subscription payment
                 # Extract payload/tier from metadata
                 payload = session.get("metadata", {}).get("payload", "premium_advanced")
-                tier = SubscriptionTier.PREMIUM_BASIC if payload == "premium_basic" else SubscriptionTier.PREMIUM_ADVANCED
+                tier = SubscriptionTier.PREMIUM_ADVANCED
+                duration_days = 30
+                
+                if payload == "premium_basic":
+                    tier = SubscriptionTier.PREMIUM_BASIC
+                elif payload == "premium_basic_year":
+                    tier = SubscriptionTier.PREMIUM_BASIC
+                    duration_days = 365
+                elif payload == "premium_advanced_year":
+                    tier = SubscriptionTier.PREMIUM_ADVANCED
+                    duration_days = 365
+
+                # Get Stripe IDs
+                stripe_customer_id = session.get("customer")
+                stripe_subscription_id = session.get("subscription")
 
                 # Upgrade user to Premium
-                user_manager.upgrade_to_premium(phone, payment_method="stripe", tier=tier)
+                user_manager.upgrade_to_premium(
+                    phone, 
+                    payment_method="stripe", 
+                    tier=tier, 
+                    duration_days=duration_days,
+                    stripe_customer_id=stripe_customer_id,
+                    stripe_subscription_id=stripe_subscription_id
+                )
                 logger.info(f"User {phone} upgraded to Premium via Stripe")
-            else:
-                logger.error("No phone in Stripe session metadata")
         
         # Handle subscription cancellation
         elif event["type"] == "customer.subscription.deleted":
@@ -1268,7 +1430,14 @@ async def create_tbank_payment(request: Request):
         app.state.tbank_orders[order_id] = phone
         
         # Amount in kopecks (₽200.00 = 20000 kopecks, ₽300.00 = 30000 kopecks)
-        amount = 30000 if payload == "premium_advanced" else 20000
+        # Year: ₽2000 = 200000, ₽3000 = 300000
+        amount = 30000
+        if payload == "premium_basic":
+            amount = 20000
+        elif payload == "premium_basic_year":
+            amount = 200000
+        elif payload == "premium_advanced_year":
+            amount = 300000
         
         # Get base URL for redirects (Frontend URL)
         # In production, this should be configured via environment variable
@@ -1353,14 +1522,23 @@ async def tbank_webhook(request: Request):
                     # Ideally we should have stored the payload in app.state.tbank_orders too, 
                     # or passed it in metadata.
                     # Let's check metadata from result
+                    # Let's check metadata from result
                     tier = SubscriptionTier.PREMIUM_ADVANCED
+                    duration_days = 30
+                    
                     if result.get("data") and result["data"].get("payload"):
                          payload = result["data"].get("payload")
                          if payload == "premium_basic":
                              tier = SubscriptionTier.PREMIUM_BASIC
+                         elif payload == "premium_basic_year":
+                             tier = SubscriptionTier.PREMIUM_BASIC
+                             duration_days = 365
+                         elif payload == "premium_advanced_year":
+                             tier = SubscriptionTier.PREMIUM_ADVANCED
+                             duration_days = 365
                     
                     # Upgrade user to premium
-                    user_manager.upgrade_to_premium(phone, payment_method="tbank", tier=tier)
+                    user_manager.upgrade_to_premium(phone, payment_method="tbank", tier=tier, duration_days=duration_days)
                     
                     logger.info(f"Upgraded user {phone} to Premium via T-Bank payment {payment_id}")
                     
@@ -1398,50 +1576,45 @@ async def get_tbank_status(payment_id: str, request: Request):
 
 
 
-@app.post("/api/payment/x402/upgrade")
-async def upgrade_with_x402(request: Request):
-    """
-    Upgrade user to Premium using x402 crypto payment.
-    Protected by x402 middleware.
-    """
-    session_id = request.cookies.get("session_id")
-    if not session_id or session_id not in sessions:
-        # Note: In a real scenario, we might want to handle this better if the payment succeeded but auth failed.
-        # But for now, we assume valid session.
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    
-    phone = sessions[session_id]["phone"]
-    
-    try:
-        user_manager.upgrade_to_premium(phone, payment_method="crypto")
-        logger.info(f"User {phone} upgraded to Premium via x402")
-        return {"success": True, "message": "Upgraded to Premium"}
-    except Exception as e:
-        logger.error(f"Error upgrading user via x402: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/payment/coinbase-charge")
 @limiter.limit("10/minute")
-async def create_coinbase_charge(request: Request):
+async def create_coinbase_charge(request: Request, body: models.CreateCoinbaseChargeRequest):
     """Create a Coinbase Commerce charge for Premium subscription."""
     session_id = request.cookies.get("session_id")
     if not session_id or session_id not in sessions:
         raise HTTPException(status_code=401, detail="Not authenticated")
     
     phone = sessions[session_id]["phone"]
+    payload = body.payload
     
+    # Define pricing based on payload
+    pricing = {
+        "premium_basic": {"amount": "2.00", "name": "Premium Basic (1 Month)", "description": "1 Month Premium Basic Subscription"},
+        "premium_advanced": {"amount": "3.00", "name": "Premium Advanced (1 Month)", "description": "1 Month Premium Advanced Subscription"},
+        "premium_basic_year": {"amount": "20.00", "name": "Premium Basic (1 Year)", "description": "1 Year Premium Basic Subscription"},
+        "premium_advanced_year": {"amount": "30.00", "name": "Premium Advanced (1 Year)", "description": "1 Year Premium Advanced Subscription"},
+    }
+    
+    plan = pricing.get(payload)
+    if not plan:
+        # Fallback
+        plan = pricing["premium_advanced"]
+        
     try:
         # Create charge
         charge = coinbase_service.create_charge(
-            name="Televizor Premium",
-            description="1 Month Premium Subscription",
+            name=plan["name"],
+            description=plan["description"],
             pricing_type="fixed_price",
             local_price={
-                "amount": "0.01",
+                "amount": plan["amount"],
                 "currency": "EUR"
             },
             metadata={
                 "phone": phone,
-                "type": "premium_subscription"
+                "type": "premium_subscription",
+                "payload": payload
             },
             redirect_url=f"{config.FRONTEND_URL}/subscription?success=true&provider=coinbase",
             cancel_url=f"{config.FRONTEND_URL}/subscription?canceled=true"
@@ -1477,10 +1650,24 @@ async def coinbase_webhook(request: Request):
             data = event_data.get("data", {})
             metadata = data.get("metadata", {})
             phone = metadata.get("phone")
+            payload_type = metadata.get("payload", "premium_advanced")
             
             if phone:
-                logger.info(f"Processing Coinbase payment for {phone}")
-                user_manager.upgrade_to_premium(phone, payment_method="coinbase")
+                logger.info(f"Processing Coinbase payment for {phone} (payload: {payload_type})")
+                
+                tier = models.SubscriptionTier.PREMIUM_ADVANCED
+                duration_days = 30
+                
+                if payload_type == "premium_basic":
+                    tier = models.SubscriptionTier.PREMIUM_BASIC
+                elif payload_type == "premium_basic_year":
+                    tier = models.SubscriptionTier.PREMIUM_BASIC
+                    duration_days = 365
+                elif payload_type == "premium_advanced_year":
+                    tier = models.SubscriptionTier.PREMIUM_ADVANCED
+                    duration_days = 365
+                
+                user_manager.upgrade_to_premium(phone, payment_method="coinbase", tier=tier, duration_days=duration_days)
             else:
                 logger.warning("Coinbase webhook missing phone metadata")
                 

@@ -8,7 +8,6 @@ from feed_manager import FeedConfigManager
 from user_manager import UserManager
 from models import SubscriptionTier
 from redis_client import RateLimiter
-from tasks import forward_message_task
 import config
 
 logging.basicConfig(
@@ -119,7 +118,12 @@ class FeedWorker:
         try:
             # Use Telegram ID if available, otherwise fallback to phone (user_id here is phone)
             user_identifier = str(sub_status.telegram_id) if sub_status.telegram_id else user_id
-            manager = get_telegram_manager(user_identifier)
+            
+            # Load session string from DB
+            # user_id is the phone number here
+            session_string = self.user_manager.get_session(user_id)
+            
+            manager = get_telegram_manager(user_identifier, session_string)
             
             # Check if authenticated
             if not await manager.is_authenticated():
@@ -219,13 +223,15 @@ class FeedWorker:
                             # 3. Queue for Forwarding
                             delay = 15 if getattr(feed, 'delay_enabled', True) else 0
                             
-                            # Push to Celery Queue
-                            forward_message_task.delay(
-                                user_id=user_id,
-                                source_chat_id=source_channel_id,
-                                destination_channel_id=feed.destination_channel_id,
-                                message_id=event.message.id,
-                                delay_seconds=delay
+                            # Use in-process forwarding to avoid SQLite lock issues
+                            asyncio.create_task(
+                                self._forward_message(
+                                    client=client,
+                                    source_chat_id=source_channel_id,
+                                    destination_channel_id=feed.destination_channel_id,
+                                    message_id=event.message.id,
+                                    delay_seconds=delay
+                                )
                             )
                             
                             logger.info(f"Queued message {event.message.id} for forwarding to {feed.destination_channel_id}")
@@ -249,6 +255,24 @@ class FeedWorker:
             
         except Exception as e:
             logger.error(f"Failed to setup handlers for user {user_id}: {e}")
+
+    async def _forward_message(self, client, source_chat_id: int, destination_channel_id: int, message_id: int, delay_seconds: int):
+        """
+        Forward message using the existing client connection.
+        """
+        try:
+            if delay_seconds > 0:
+                await asyncio.sleep(delay_seconds)
+                
+            await client.forward_messages(
+                entity=destination_channel_id,
+                messages=message_id,
+                from_peer=source_chat_id
+            )
+            logger.info(f"Successfully forwarded message {message_id} from {source_chat_id} to {destination_channel_id}")
+            
+        except Exception as e:
+            logger.error(f"Error forwarding message {message_id} to {destination_channel_id}: {e}")
 
 
 # Global worker instance
