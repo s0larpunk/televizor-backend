@@ -1,7 +1,14 @@
 import sqlite3
 import os
 
-DB_PATH = "telegram_feed.db"
+import os
+import sys
+
+# Add parent directory to path to import config
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+import config
+
+DB_PATH = config.DB_PATH
 
 def migrate():
     if not os.path.exists(DB_PATH):

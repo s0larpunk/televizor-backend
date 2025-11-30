@@ -12,6 +12,13 @@ TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "")
 SESSION_DIR = Path(os.getenv("SESSION_DIR", "./sessions"))
 SESSION_DIR.mkdir(exist_ok=True)
 
+# Database Configuration
+# Check if /app/data exists (Railway Volume)
+if os.path.exists("/app/data"):
+    DB_PATH = "/app/data/telegram_feed.db"
+else:
+    DB_PATH = "telegram_feed.db"
+
 # Server Configuration
 HOST = os.getenv("HOST", "127.0.0.1")
 PORT = int(os.getenv("PORT", "8000"))

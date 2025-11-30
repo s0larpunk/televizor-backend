@@ -4,10 +4,14 @@ from sqlalchemy.orm import sessionmaker
 import os
 from dotenv import load_dotenv
 
+import config
+
 load_dotenv()
 
 # Default to SQLite for local development if DATABASE_URL is not set
-SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./telegram_feed.db")
+# Use config.DB_PATH which handles the /app/data logic
+default_db_url = f"sqlite:///{config.DB_PATH}"
+SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL", default_db_url)
 
 # Handle Postgres URL format for SQLAlchemy (postgres:// -> postgresql://)
 if SQLALCHEMY_DATABASE_URL.startswith("postgres://"):
