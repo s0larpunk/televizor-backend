@@ -16,6 +16,9 @@ SESSION_DIR.mkdir(exist_ok=True)
 # Check if /app/data exists (Railway Volume)
 if os.path.exists("/app/data"):
     DB_PATH = "/app/data/telegram_feed.db"
+# Check if local data directory exists
+elif os.path.exists("data"):
+    DB_PATH = "data/telegram_feed.db"
 else:
     DB_PATH = "telegram_feed.db"
 
