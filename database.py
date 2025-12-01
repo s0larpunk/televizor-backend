@@ -9,23 +9,32 @@ import config
 load_dotenv()
 
 # Default to SQLite for local development if DATABASE_URL is not set
-# Use config.DB_PATH which handles the /app/data logic
-default_db_url = f"sqlite:///{config.DB_PATH}"
-SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL", default_db_url)
+# Use DATABASE_URL from Railway (PostgreSQL), fallback to SQLite for local dev
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-# Handle Postgres URL format for SQLAlchemy (postgres:// -> postgresql://)
-if SQLALCHEMY_DATABASE_URL.startswith("postgres://"):
-    SQLALCHEMY_DATABASE_URL = SQLALCHEMY_DATABASE_URL.replace("postgres://", "postgresql://", 1)
+if DATABASE_URL:
+    # Railway PostgreSQL - fix the URL format (Railway uses postgres://, SQLAlchemy needs postgresql://)
+    if DATABASE_URL.startswith("postgres://"):
+        DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+    
+    # Create PostgreSQL engine
+    engine = create_engine(
+        DATABASE_URL,
+        pool_pre_ping=True,  # Verify connections before using them
+        pool_recycle=300,    # Recycle connections after 5 minutes
+    )
+    print(f"✓ Connected to PostgreSQL database")
+else:
+    # Local development - use SQLite
+    os.makedirs("data", exist_ok=True)
+    SQLALCHEMY_DATABASE_URL = "sqlite:///./data/telegram_feed.db"
+    engine = create_engine(
+        SQLALCHEMY_DATABASE_URL,
+        connect_args={"check_same_thread": False}
+    )
+    print(f"✓ Using local SQLite database: {SQLALCHEMY_DATABASE_URL}")
 
-connect_args = {}
-if SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
-    connect_args = {"check_same_thread": False}
-
-engine = create_engine(
-    SQLALCHEMY_DATABASE_URL, connect_args=connect_args
-)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
 Base = declarative_base()
 
 def get_db():
