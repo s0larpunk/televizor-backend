@@ -4,7 +4,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
 import uuid
 import models
-from sql_models import WebSession
+# Import ALL SQLAlchemy models so tables get created
+from sql_models import WebSession, User, Feed, UserSession
 from telegram_client import get_telegram_manager, cleanup_client
 import asyncio
 from contextlib import asynccontextmanager
