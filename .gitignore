@@ -15,6 +15,7 @@ build/
 sessions/
 *.session
 *.session-journal
+telegram_feed.db
 /app/data/telegram_feed.db
 /app/data/telegram_feed.db-journal
 
