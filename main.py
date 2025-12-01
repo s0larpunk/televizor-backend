@@ -1716,3 +1716,135 @@ async def coinbase_webhook(request: Request):
     except Exception as e:
         logger.error(f"Error processing Coinbase webhook: {e}")
         raise HTTPException(status_code=500, detail="Webhook processing failed")
+
+
+# Admin Database Viewer
+import subprocess
+import signal
+
+db_viewer_process = None
+
+@app.get("/admin/db-viewer/start")
+async def start_database_viewer(admin_password: Optional[str] = Header(None, alias="X-Admin-Password")):
+    """
+    Launch SQLite Web Viewer for database inspection.
+    Requires ADMIN_PASSWORD environment variable to be set.
+    Access the viewer at: https://your-domain.railway.app/db
+    """
+    global db_viewer_process
+    
+    # Check if admin password is configured
+    configured_password = os.getenv("ADMIN_PASSWORD")
+    if not configured_password:
+        raise HTTPException(
+            status_code=503, 
+            detail="Admin password not configured. Set ADMIN_PASSWORD environment variable in Railway."
+        )
+    
+    # Verify provided password
+    if admin_password != configured_password:
+        raise HTTPException(status_code=403, detail="Invalid admin password")
+    
+    # Check if already running
+    if db_viewer_process and db_viewer_process.poll() is None:
+        return {
+            "status": "already_running",
+            "message": "Database viewer is already running",
+            "url": "/db"
+        }
+    
+    try:
+        # Get database path
+        db_path = os.path.join("data", "telegram_feed.db")
+        if not os.path.exists(db_path):
+            raise HTTPException(status_code=404, detail=f"Database not found at {db_path}")
+        
+        # Start sqlite-web in the background
+        # --url-prefix /db to make it accessible at /db
+        # --read-only for safety
+        db_viewer_process = subprocess.Popen([
+            "sqlite_web",
+            db_path,
+            "--host", "0.0.0.0",
+            "--port", "8080",
+            "--url-prefix", "/db",
+            "--read-only"
+        ])
+        
+        logger.info(f"Started SQLite Web Viewer on port 8080 (PID: {db_viewer_process.pid})")
+        
+        return {
+            "status": "started",
+            "message": "Database viewer started successfully",
+            "url": "/db",
+            "pid": db_viewer_process.pid,
+            "note": "The viewer is running in read-only mode for safety"
+        }
+        
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=500,
+            detail="sqlite_web not found. Make sure it's installed in requirements.txt"
+        )
+    except Exception as e:
+        logger.error(f"Error starting database viewer: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to start viewer: {str(e)}")
+
+
+@app.get("/admin/db-viewer/stop")
+async def stop_database_viewer(admin_password: Optional[str] = Header(None, alias="X-Admin-Password")):
+    """Stop the SQLite Web Viewer"""
+    global db_viewer_process
+    
+    # Verify admin password
+    configured_password = os.getenv("ADMIN_PASSWORD")
+    if not configured_password or admin_password != configured_password:
+        raise HTTPException(status_code=403, detail="Invalid admin password")
+    
+    if not db_viewer_process or db_viewer_process.poll() is not None:
+        return {"status": "not_running", "message": "Database viewer is not running"}
+    
+    try:
+        # Gracefully terminate
+        db_viewer_process.terminate()
+        db_viewer_process.wait(timeout=5)
+        logger.info("Stopped SQLite Web Viewer")
+        
+        return {
+            "status": "stopped",
+            "message": "Database viewer stopped successfully"
+        }
+    except subprocess.TimeoutExpired:
+        # Force kill if it doesn't stop gracefully
+        db_viewer_process.kill()
+        logger.warning("Force killed SQLite Web Viewer")
+        return {
+            "status": "killed",
+            "message": "Database viewer was force killed"
+        }
+    except Exception as e:
+        logger.error(f"Error stopping database viewer: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to stop viewer: {str(e)}")
+
+
+@app.get("/admin/db-viewer/status")
+async def database_viewer_status(admin_password: Optional[str] = Header(None, alias="X-Admin-Password")):
+    """Check if the SQLite Web Viewer is running"""
+    global db_viewer_process
+    
+    # Verify admin password
+    configured_password = os.getenv("ADMIN_PASSWORD")
+    if not configured_password or admin_password != configured_password:
+        raise HTTPException(status_code=403, detail="Invalid admin password")
+    
+    if db_viewer_process and db_viewer_process.poll() is None:
+        return {
+            "status": "running",
+            "pid": db_viewer_process.pid,
+            "url": "/db"
+        }
+    else:
+        return {
+            "status": "stopped",
+            "pid": None
+        }
