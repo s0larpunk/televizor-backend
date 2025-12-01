@@ -17,11 +17,12 @@ class UserManager:
     def get_db(self):
         return SessionLocal()
 
-    def get_subscription_status(self, phone: str) -> SubscriptionStatus:
-        """Get subscription status for a user."""
+    def get_subscription_status(self, phone: str, return_is_new: bool = False):
+        """Get subscription status for a user. Optionally returns tuple (status, is_new_user)."""
         db = self.get_db()
         try:
             user = db.query(User).filter(User.phone == phone).first()
+            is_new_user = False
             
             if not user:
                 # Create new user
@@ -31,6 +32,7 @@ class UserManager:
                 db.add(user)
                 db.commit()
                 db.refresh(user)
+                is_new_user = True
             else:
                 logger.info(f"Found existing user {phone} in DB. Tier: {user.tier}, Expiry: {user.expiry_date}")
             
@@ -46,7 +48,7 @@ class UserManager:
             if tier == SubscriptionTier.PREMIUM:
                 tier = SubscriptionTier.PREMIUM_ADVANCED
 
-            return SubscriptionStatus(
+            status = SubscriptionStatus(
                 tier=tier,
                 trial_start_date=user.trial_start_date.isoformat() if user.trial_start_date else None,
                 expiry_date=user.expiry_date.isoformat() if user.expiry_date else None,
@@ -54,6 +56,10 @@ class UserManager:
                 trial_available=trial_available,
                 telegram_id=user.telegram_id
             )
+            
+            if return_is_new:
+                return status, is_new_user
+            return status
         finally:
             db.close()
 

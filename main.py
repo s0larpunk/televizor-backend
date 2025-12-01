@@ -335,11 +335,15 @@ async def verify_code(request: Request, body: models.VerifyCodeRequest, response
         
         # Ensure user exists and apply referral bonus if applicable
         try:
-            # This ensures user creation
-            user_manager.get_subscription_status(phone)
+            # Check if this is a new user
+            _, is_new_user = user_manager.get_subscription_status(phone, return_is_new=True)
             
-            if body.referral_code:
+            # Only apply referral bonus if this is a NEW user
+            if body.referral_code and is_new_user:
+                logger.info(f"Applying referral bonus for new user {phone} with code {body.referral_code}")
                 user_manager.apply_referral_bonus(phone, body.referral_code)
+            elif body.referral_code and not is_new_user:
+                logger.info(f"Skipping referral bonus for existing user {phone}")
         except Exception as e:
             logger.error(f"Error handling referral for {phone}: {e}")
 
