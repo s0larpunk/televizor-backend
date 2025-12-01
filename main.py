@@ -206,7 +206,11 @@ async def send_code(request: Request, body: models.SendCodeRequest, response: Re
         except Exception:
             user_identifier = normalized_phone
 
-        manager = get_telegram_manager(user_identifier)
+            user_identifier = normalized_phone
+        
+        # Try to load existing session string
+        session_string = user_manager.get_session(normalized_phone, instance_id=config.INSTANCE_ID)
+        manager = get_telegram_manager(user_identifier, session_string)
         result = await manager.send_code(normalized_phone)
         
         is_authenticated = result.get("is_authenticated", False)
@@ -282,7 +286,12 @@ async def verify_code(request: Request, body: models.VerifyCodeRequest, response
         if body.referral_code:
             logger.info(f"Received referral code: {body.referral_code}")
             
-        manager = get_telegram_manager(user_identifier)
+        if body.referral_code:
+            logger.info(f"Received referral code: {body.referral_code}")
+            
+        # Try to load existing session string
+        session_string = user_manager.get_session(phone, instance_id=config.INSTANCE_ID)
+        manager = get_telegram_manager(user_identifier, session_string)
         await manager.verify_code(
             body.phone,
             body.code,
@@ -385,7 +394,12 @@ async def verify_password(
     try:
         phone = session.phone
         user_identifier = session.user_identifier
-        manager = get_telegram_manager(user_identifier)
+        phone = session.phone
+        user_identifier = session.user_identifier
+        
+        # Try to load existing session string
+        session_string = user_manager.get_session(phone, instance_id=config.INSTANCE_ID)
+        manager = get_telegram_manager(user_identifier, session_string)
         await manager.verify_password(body.password)
         
         # After successful verification, save the session string
@@ -453,7 +467,12 @@ async def list_channels(session_id: Optional[str] = Cookie(None)):
     try:
         phone = session.phone
         user_identifier = session.user_identifier
-        manager = get_telegram_manager(user_identifier)
+        phone = session.phone
+        user_identifier = session.user_identifier
+        
+        # Try to load existing session string
+        session_string = user_manager.get_session(phone, instance_id=config.INSTANCE_ID)
+        manager = get_telegram_manager(user_identifier, session_string)
         channels = await manager.get_channels()
         return {"channels": channels}
     except Exception as e:
@@ -469,7 +488,12 @@ async def list_folders(session_id: Optional[str] = Cookie(None)):
     try:
         phone = session.phone
         user_identifier = session.user_identifier
-        manager = get_telegram_manager(user_identifier)
+        phone = session.phone
+        user_identifier = session.user_identifier
+        
+        # Try to load existing session string
+        session_string = user_manager.get_session(phone, instance_id=config.INSTANCE_ID)
+        manager = get_telegram_manager(user_identifier, session_string)
         folders = await manager.get_dialog_filters()
         return {"folders": folders}
     except Exception as e:
@@ -488,7 +512,12 @@ async def get_channel_photo(
     try:
         phone = session.phone
         user_identifier = session.user_identifier
-        manager = get_telegram_manager(user_identifier)
+        phone = session.phone
+        user_identifier = session.user_identifier
+        
+        # Try to load existing session string
+        session_string = user_manager.get_session(phone, instance_id=config.INSTANCE_ID)
+        manager = get_telegram_manager(user_identifier, session_string)
         photo_data = await manager.get_channel_photo(channel_id)
         
         if photo_data:
@@ -515,7 +544,12 @@ async def create_channel(
     try:
         phone = session.phone
         user_identifier = session.user_identifier
-        manager = get_telegram_manager(user_identifier)
+        phone = session.phone
+        user_identifier = session.user_identifier
+        
+        # Try to load existing session string
+        session_string = user_manager.get_session(phone, instance_id=config.INSTANCE_ID)
+        manager = get_telegram_manager(user_identifier, session_string)
         channel = await manager.create_channel(request.title, request.about)
         return {
             "success": True,
