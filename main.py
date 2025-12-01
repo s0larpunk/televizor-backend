@@ -405,9 +405,9 @@ async def logout(
             phone = session.phone
             delete_web_session(session_id)
             
-            manager = get_telegram_manager(phone)
-            manager.delete_session()
+            # Delete user's Telegram session from database
             user_manager.delete_session(phone, instance_id=config.INSTANCE_ID)
+            # Cleanup the telegram client
             await cleanup_client(phone)
         
         response.delete_cookie("session_id")
