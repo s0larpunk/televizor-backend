@@ -1778,7 +1778,7 @@ async def start_database_viewer(admin_password: Optional[str] = Header(None, ali
         return {
             "status": "started",
             "message": "Database viewer started successfully",
-            "url": "/db",
+            "url": "/admin/db-browser",
             "pid": db_viewer_process.pid,
             "note": "The viewer allows editing - use with caution!"
         }
@@ -1843,7 +1843,7 @@ async def database_viewer_status(admin_password: Optional[str] = Header(None, al
         return {
             "status": "running",
             "pid": db_viewer_process.pid,
-            "url": "/db"
+            "url": "/admin/db-browser"
         }
     else:
         return {
@@ -1852,10 +1852,10 @@ async def database_viewer_status(admin_password: Optional[str] = Header(None, al
         }
 
 
-# Reverse proxy for /db - specific route MUST come before catch-all
-@app.get("/db")
-async def proxy_db_viewer_root(request: Request):
-    """Proxy root /db request to sqlite-web"""
+# Reverse proxy for admin database browser - using /admin/db-browser to avoid conflicts
+@app.get("/admin/db-browser")
+async def proxy_db_browser_root(request: Request):
+    """Proxy root /admin/db-browser request to sqlite-web"""
     
     # Build target URL
     target_url = "http://127.0.0.1:8080/"
@@ -1887,9 +1887,9 @@ async def proxy_db_viewer_root(request: Request):
             raise HTTPException(status_code=500, detail=f"Proxy error: {str(e)}")
 
 
-# Catch-all route for /db/* paths
-@app.api_route("/db/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
-async def proxy_db_viewer(request: Request, path: str):
+# Catch-all route for /admin/db-browser/* paths
+@app.api_route("/admin/db-browser/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def proxy_db_browser(request: Request, path: str):
     """Proxy requests to sqlite-web running on port 8080"""
     
     # Build target URL
