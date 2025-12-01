@@ -150,7 +150,20 @@ feed_config_manager = FeedConfigManager()
 
 @app.get("/api/health")
 async def health_check():
-    return {"status": "ok", "service": "telegram-feed-aggregator"}
+    db_url = str(engine.url)
+    # Hide password in URL for security
+    if '@' in db_url:
+        db_type = "PostgreSQL" if "postgresql" in db_url else "Unknown"
+        db_info = f"{db_type} (connected)"
+    else:
+        db_info = db_url
+    
+    return {
+        "status": "ok", 
+        "service": "telegram-feed-aggregator",
+        "database": db_info,
+        "database_url_set": bool(os.getenv("DATABASE_URL"))
+    }
 
 # ==================== AUTH ENDPOINTS ====================
 
