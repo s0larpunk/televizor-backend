@@ -177,6 +177,9 @@ async def verify_code(request: Request, body: models.VerifyCodeRequest, response
         phone = sessions[session_id]["phone"]
         user_identifier = sessions[session_id].get("user_identifier", phone)
         logger.info(f"Verifying code for phone: {phone} (identifier: {user_identifier})")
+        if body.referral_code:
+            logger.info(f"Received referral code: {body.referral_code}")
+            
         manager = get_telegram_manager(user_identifier)
         await manager.verify_code(
             body.phone,
