@@ -173,11 +173,27 @@ class FeedWorker:
                     source_to_feeds[source_id].append(feed)
             
             # Register handler for new messages
-            @client.on(events.NewMessage(chats=list(source_to_feeds.keys())))
+            # We'll listen to ALL messages and filter inside to debug ID mismatches
+            @client.on(events.NewMessage())
             async def handler(event):
                 try:
-                    source_channel_id = utils.get_peer_id(event.message.peer_id, add_mark=False)
-                    logger.info(f"Received message from {event.chat_id} (normalized: {source_channel_id})")
+                    # Debug logging for ALL messages
+                    chat_id = event.chat_id
+                    sender_id = event.sender_id
+                    
+                    # Try to get the peer ID in different formats
+                    peer_id = utils.get_peer_id(event.message.peer_id)
+                    normalized_id = utils.get_peer_id(event.message.peer_id, add_mark=False)
+                    
+                    logger.info(f"DEBUG: Event received. ChatID: {chat_id}, PeerID: {peer_id}, Normalized: {normalized_id}")
+                    logger.info(f"DEBUG: Monitored sources: {list(source_to_feeds.keys())}")
+                    
+                    if normalized_id not in source_to_feeds:
+                        # logger.debug(f"Ignoring message from {normalized_id} (not in monitored sources)")
+                        return
+
+                    source_channel_id = normalized_id
+
                     
                     relevant_feeds = source_to_feeds.get(source_channel_id, [])
                     logger.info(f"Found {len(relevant_feeds)} relevant feeds for source {source_channel_id}")
