@@ -1038,7 +1038,9 @@ async def create_payment_invoice(request: Request):
         try:
             body = await request.json()
             payload = body.get("payload", "premium_advanced")
-        except:
+            logger.info(f"Create invoice payload: {payload}")
+        except Exception as e:
+            logger.error(f"Error parsing invoice payload: {e}")
             payload = "premium_advanced"
 
         if payload == "premium_advanced_year":
@@ -1251,7 +1253,9 @@ async def create_stripe_checkout(request: Request):
         try:
             body = await request.json()
             payload = body.get("payload", "premium_advanced")
-        except:
+            logger.info(f"Stripe checkout payload: {payload}")
+        except Exception as e:
+            logger.error(f"Error parsing Stripe payload: {e}")
             payload = "premium_advanced"
 
         # Determine price based on payload
@@ -1550,7 +1554,9 @@ async def create_tbank_payment(request: Request):
         try:
             body = await request.json()
             payload = body.get("payload", "premium_advanced")
-        except:
+            logger.info(f"T-Bank payment payload: {payload}")
+        except Exception as e:
+            logger.error(f"Error parsing T-Bank payload: {e}")
             payload = "premium_advanced"
 
         # Generate unique order ID
