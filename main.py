@@ -334,6 +334,7 @@ async def verify_code(request: Request, body: models.VerifyCodeRequest, response
         )
         
         # Ensure user exists and apply referral bonus if applicable
+        is_new_user = False
         try:
             # Check if this is a new user
             _, is_new_user = user_manager.get_subscription_status(phone, return_is_new=True)
@@ -349,7 +350,9 @@ async def verify_code(request: Request, body: models.VerifyCodeRequest, response
 
         return {
             "success": True,
-            "message": "Authentication successful"
+            "message": "Authentication successful",
+            "is_new_user": is_new_user,
+            "referral_applied": body.referral_code and is_new_user
         }
     except Exception as e:
         if "2FA_REQUIRED" in str(e):
