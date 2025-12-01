@@ -1852,7 +1852,42 @@ async def database_viewer_status(admin_password: Optional[str] = Header(None, al
         }
 
 
-# Reverse proxy for /db to forward to sqlite-web on port 8080
+# Reverse proxy for /db - specific route MUST come before catch-all
+@app.get("/db")
+async def proxy_db_viewer_root(request: Request):
+    """Proxy root /db request to sqlite-web"""
+    
+    # Build target URL
+    target_url = "http://127.0.0.1:8080/"
+    
+    # Forward the request
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            response = await client.get(target_url, follow_redirects=True)
+            
+            # Return the response
+            return Response(
+                content=response.content,
+                status_code=response.status_code,
+                headers=dict(response.headers),
+                media_type=response.headers.get("content-type")
+            )
+        except httpx.ConnectError:
+            raise HTTPException(
+                status_code=503,
+                detail="Database viewer is not running on port 8080. Start it at /admin/db-viewer/start"
+            )
+        except httpx.TimeoutException:
+            raise HTTPException(
+                status_code=504,
+                detail="Database viewer timeout. It may be overloaded."
+            )
+        except Exception as e:
+            logger.error(f"Proxy error: {e}")
+            raise HTTPException(status_code=500, detail=f"Proxy error: {str(e)}")
+
+
+# Catch-all route for /db/* paths
 @app.api_route("/db/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def proxy_db_viewer(request: Request, path: str):
     """Proxy requests to sqlite-web running on port 8080"""
@@ -1898,8 +1933,3 @@ async def proxy_db_viewer(request: Request, path: str):
             logger.error(f"Proxy error: {e}")
             raise HTTPException(status_code=500, detail=f"Proxy error: {str(e)}")
 
-
-@app.get("/db")
-async def proxy_db_viewer_root(request: Request):
-    """Proxy root /db request to sqlite-web"""
-    return await proxy_db_viewer(request, "")
