@@ -4,11 +4,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
 import uuid
 import models
+from sql_models import WebSession
 from telegram_client import get_telegram_manager, cleanup_client
 import asyncio
 from contextlib import asynccontextmanager
 import os
-from database import engine, Base
+from database import engine, Base, SessionLocal
 import config
 
 # Import rate limiting
@@ -80,17 +81,62 @@ app.add_middleware(
 
 # Apply x402 middleware - REMOVED
 
-# Simple session storage (in production, use Redis or similar)
-sessions = {}
+# Helper functions for WebSession
+def get_web_session(session_id: str):
+    db = SessionLocal()
+    try:
+        return db.query(WebSession).filter(WebSession.session_id == session_id).first()
+    finally:
+        db.close()
+
+def create_web_session(session_id: str, phone: str, user_identifier: str, phone_code_hash: str, authenticated: bool = False):
+    db = SessionLocal()
+    try:
+        session = WebSession(
+            session_id=session_id,
+            phone=phone,
+            user_identifier=user_identifier,
+            phone_code_hash=phone_code_hash,
+            authenticated=authenticated,
+            expires_at=datetime.utcnow() + timedelta(days=30)
+        )
+        db.add(session)
+        db.commit()
+        db.refresh(session)
+        return session
+    finally:
+        db.close()
+
+def update_web_session(session_id: str, **kwargs):
+    db = SessionLocal()
+    try:
+        session = db.query(WebSession).filter(WebSession.session_id == session_id).first()
+        if session:
+            for key, value in kwargs.items():
+                setattr(session, key, value)
+            db.commit()
+            db.refresh(session)
+            return session
+        return None
+    finally:
+        db.close()
+
+def delete_web_session(session_id: str):
+    db = SessionLocal()
+    try:
+        db.query(WebSession).filter(WebSession.session_id == session_id).delete()
+        db.commit()
+    finally:
+        db.close()
 
 # Session expiry middleware
 @app.middleware("http")
 async def check_session_expiry(request: Request, call_next):
     session_id = request.cookies.get("session_id")
-    if session_id and session_id in sessions:
-        expires_at = sessions[session_id].get("expires_at")
-        if expires_at and datetime.fromisoformat(expires_at) < datetime.now():
-            del sessions[session_id]
+    if session_id:
+        session = get_web_session(session_id)
+        if session and session.expires_at < datetime.utcnow():
+            delete_web_session(session_id)
     response = await call_next(request)
     return response
 
@@ -128,19 +174,17 @@ async def send_code(request: Request, body: models.SendCodeRequest, response: Re
         
         is_authenticated = result.get("is_authenticated", False)
         
-        # Store temporary session data
-        sessions[temp_session_id] = {
-            "phone": body.phone,
-            "user_identifier": user_identifier,
-            "phone_code_hash": result["phone_code_hash"],
-            "authenticated": False,
-            "created_at": datetime.now().isoformat(),
-            "expires_at": (datetime.now() + timedelta(days=30)).isoformat()
-        }
+        # Store temporary session data in DB
+        create_web_session(
+            session_id=temp_session_id,
+            phone=body.phone,
+            user_identifier=user_identifier,
+            phone_code_hash=result["phone_code_hash"],
+            authenticated=is_authenticated
+        )
         
         # If already authenticated, set the cookie immediately
         if is_authenticated:
-            sessions[temp_session_id]["authenticated"] = True
             response.set_cookie(
                 key="session_id",
                 value=temp_session_id,
@@ -163,19 +207,23 @@ async def send_code(request: Request, body: models.SendCodeRequest, response: Re
 async def verify_code(request: Request, body: models.VerifyCodeRequest, response: Response):
     """Verify the authentication code."""
     # Find session by phone and code hash
-    session_id = None
-    for sid, data in sessions.items():
-        if (data.get("phone") == body.phone and 
-            data.get("phone_code_hash") == body.phone_code_hash):
-            session_id = sid
-            break
+    db = SessionLocal()
+    try:
+        session = db.query(WebSession).filter(
+            WebSession.phone == body.phone,
+            WebSession.phone_code_hash == body.phone_code_hash
+        ).first()
+    finally:
+        db.close()
     
-    if not session_id:
+    if not session:
         raise HTTPException(status_code=400, detail="Invalid session")
     
+    session_id = session.session_id
+    
     try:
-        phone = sessions[session_id]["phone"]
-        user_identifier = sessions[session_id].get("user_identifier", phone)
+        phone = session.phone
+        user_identifier = session.user_identifier
         logger.info(f"Verifying code for phone: {phone} (identifier: {user_identifier})")
         if body.referral_code:
             logger.info(f"Received referral code: {body.referral_code}")
@@ -209,7 +257,7 @@ async def verify_code(request: Request, body: models.VerifyCodeRequest, response
                 _active_clients[str(telegram_id)] = manager
             
             # Update session identifier
-            sessions[session_id]["user_identifier"] = str(telegram_id)
+            update_web_session(session_id, user_identifier=str(telegram_id))
             
             # Save session string to DB for persistence
             session_string = await manager.get_session_string()
@@ -222,11 +270,7 @@ async def verify_code(request: Request, body: models.VerifyCodeRequest, response
             # Continue anyway, we can try again next time
         
         # Update session
-        sessions[session_id]["authenticated"] = True
-        sessions[session_id]["authenticated"] = True
-        sessions[session_id]["expires_at"] = (datetime.now() + timedelta(days=30)).isoformat()
-        if 'telegram_id' in locals():
-            sessions[session_id]["telegram_id"] = telegram_id
+        update_web_session(session_id, authenticated=True)
         
         # Set cookie
         response.set_cookie(
@@ -273,12 +317,13 @@ async def verify_password(
     session_id: Optional[str] = Cookie(None)
 ):
     """Verify 2FA password."""
-    if not session_id or session_id not in sessions:
+    session = get_web_session(session_id) if session_id else None
+    if not session:
         raise HTTPException(status_code=401, detail="No active session")
     
     try:
-        phone = sessions[session_id]["phone"]
-        user_identifier = sessions[session_id].get("user_identifier", phone)
+        phone = session.phone
+        user_identifier = session.user_identifier
         manager = get_telegram_manager(user_identifier)
         await manager.verify_password(body.password)
         
@@ -288,7 +333,7 @@ async def verify_password(
             user_manager.save_session(phone, session_string, instance_id=config.INSTANCE_ID)
             logger.info(f"Session string saved for phone: {phone} (instance: {config.INSTANCE_ID})")
         
-        sessions[session_id]["authenticated"] = True
+        update_web_session(session_id, authenticated=True)
         
         # Refresh cookie
         response.set_cookie(
@@ -307,10 +352,10 @@ async def verify_password(
 @app.get("/api/auth/status")
 async def auth_status(session_id: Optional[str] = Cookie(None)):
     """Check authentication status."""
-    # First check in-memory sessions
-    if session_id and session_id in sessions:
-        session = sessions[session_id]
-        return {"authenticated": session.get("authenticated", False)}
+    if session_id:
+        session = get_web_session(session_id)
+        if session:
+            return {"authenticated": session.authenticated}
     
     return {"authenticated": False}
 
@@ -321,14 +366,15 @@ async def logout(
 ):
     """Logout and clear session."""
     if session_id:
-        phone = sessions[session_id]["phone"]
-        if session_id in sessions:
-            del sessions[session_id]
-        
-        manager = get_telegram_manager(phone)
-        manager.delete_session()
-        user_manager.delete_session(phone, instance_id=config.INSTANCE_ID)
-        await cleanup_client(phone)
+        session = get_web_session(session_id)
+        if session:
+            phone = session.phone
+            delete_web_session(session_id)
+            
+            manager = get_telegram_manager(phone)
+            manager.delete_session()
+            user_manager.delete_session(phone, instance_id=config.INSTANCE_ID)
+            await cleanup_client(phone)
         
         response.delete_cookie("session_id")
     
@@ -339,15 +385,13 @@ async def logout(
 @app.get("/api/channels/list")
 async def list_channels(session_id: Optional[str] = Cookie(None)):
     """List all channels/groups the user has joined."""
-    if not session_id or session_id not in sessions:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    
-    if not sessions[session_id].get("authenticated"):
+    session = get_web_session(session_id) if session_id else None
+    if not session or not session.authenticated:
         raise HTTPException(status_code=401, detail="Not authenticated")
     
     try:
-        phone = sessions[session_id]["phone"]
-        user_identifier = sessions[session_id].get("user_identifier", phone)
+        phone = session.phone
+        user_identifier = session.user_identifier
         manager = get_telegram_manager(user_identifier)
         channels = await manager.get_channels()
         return {"channels": channels}
@@ -357,15 +401,13 @@ async def list_channels(session_id: Optional[str] = Cookie(None)):
 @app.get("/api/folders/list")
 async def list_folders(session_id: Optional[str] = Cookie(None)):
     """List all folders (dialog filters) the user has created."""
-    if not session_id or session_id not in sessions:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    
-    if not sessions[session_id].get("authenticated"):
+    session = get_web_session(session_id) if session_id else None
+    if not session or not session.authenticated:
         raise HTTPException(status_code=401, detail="Not authenticated")
     
     try:
-        phone = sessions[session_id]["phone"]
-        user_identifier = sessions[session_id].get("user_identifier", phone)
+        phone = session.phone
+        user_identifier = session.user_identifier
         manager = get_telegram_manager(user_identifier)
         folders = await manager.get_dialog_filters()
         return {"folders": folders}
@@ -378,15 +420,13 @@ async def get_channel_photo(
     session_id: Optional[str] = Cookie(None)
 ):
     """Get channel profile photo."""
-    if not session_id or session_id not in sessions:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    
-    if not sessions[session_id].get("authenticated"):
+    session = get_web_session(session_id) if session_id else None
+    if not session or not session.authenticated:
         raise HTTPException(status_code=401, detail="Not authenticated")
     
     try:
-        phone = sessions[session_id]["phone"]
-        user_identifier = sessions[session_id].get("user_identifier", phone)
+        phone = session.phone
+        user_identifier = session.user_identifier
         manager = get_telegram_manager(user_identifier)
         photo_data = await manager.get_channel_photo(channel_id)
         
@@ -407,15 +447,13 @@ async def create_channel(
     session_id: Optional[str] = Cookie(None)
 ):
     """Create a new private channel for feed aggregation."""
-    if not session_id or session_id not in sessions:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    
-    if not sessions[session_id].get("authenticated"):
+    session = get_web_session(session_id) if session_id else None
+    if not session or not session.authenticated:
         raise HTTPException(status_code=401, detail="Not authenticated")
     
     try:
-        phone = sessions[session_id]["phone"]
-        user_identifier = sessions[session_id].get("user_identifier", phone)
+        phone = session.phone
+        user_identifier = session.user_identifier
         manager = get_telegram_manager(user_identifier)
         channel = await manager.create_channel(request.title, request.about)
         return {
@@ -433,14 +471,12 @@ import config
 @limiter.limit("60/minute")
 async def list_feeds(request: Request, session_id: Optional[str] = Cookie(None)):
     """List all configured feeds for the user."""
-    if not session_id or session_id not in sessions:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    
-    if not sessions[session_id].get("authenticated"):
+    session = get_web_session(session_id) if session_id else None
+    if not session or not session.authenticated:
         raise HTTPException(status_code=401, detail="Not authenticated")
     
     try:
-        phone = sessions[session_id]["phone"]
+        phone = session.phone
         logger.debug(f"list_feeds: Using phone={phone} for session_id={session_id}")
         feeds = feed_config_manager.get_user_feeds(phone)
         logger.debug(f"list_feeds: Found {len(feeds)} feeds for phone={phone}")
@@ -476,10 +512,8 @@ async def create_feed(
     session_id: Optional[str] = Cookie(None)
 ):
     """Create a new feed configuration."""
-    if not session_id or session_id not in sessions:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    
-    if not sessions[session_id].get("authenticated"):
+    session = get_web_session(session_id) if session_id else None
+    if not session or not session.authenticated:
         raise HTTPException(status_code=401, detail="Not authenticated")
     
     try:
@@ -492,7 +526,7 @@ async def create_feed(
             source_filters=feed.source_filters or {}
         )
         
-        phone = sessions[session_id]["phone"]
+        phone = session.phone
         
         # Check subscription limits
         sub_status = user_manager.get_subscription_status(phone)
@@ -546,14 +580,12 @@ async def update_feed(
     session_id: Optional[str] = Cookie(None)
 ):
     """Update a feed configuration."""
-    if not session_id or session_id not in sessions:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    
-    if not sessions[session_id].get("authenticated"):
+    session = get_web_session(session_id) if session_id else None
+    if not session or not session.authenticated:
         raise HTTPException(status_code=401, detail="Not authenticated")
     
     try:
-        phone = sessions[session_id]["phone"]
+        phone = session.phone
         sub_status = user_manager.get_subscription_status(phone)
         is_premium = sub_status.tier in [SubscriptionTier.PREMIUM, SubscriptionTier.PREMIUM_BASIC, SubscriptionTier.PREMIUM_ADVANCED, SubscriptionTier.TRIAL]
         
@@ -622,14 +654,12 @@ async def delete_feed(
     session_id: Optional[str] = Cookie(None)
 ):
     """Delete a feed configuration."""
-    if not session_id or session_id not in sessions:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    
-    if not sessions[session_id].get("authenticated"):
+    session = get_web_session(session_id) if session_id else None
+    if not session or not session.authenticated:
         raise HTTPException(status_code=401, detail="Not authenticated")
     
     try:
-        phone = sessions[session_id]["phone"]
+        phone = session.phone
         success = feed_config_manager.delete_feed(phone, feed_id)
         
         if not success:
@@ -649,14 +679,12 @@ async def toggle_feed(
     session_id: Optional[str] = Cookie(None)
 ):
     """Start or stop a feed."""
-    if not session_id or session_id not in sessions:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    
-    if not sessions[session_id].get("authenticated"):
+    session = get_web_session(session_id) if session_id else None
+    if not session or not session.authenticated:
         raise HTTPException(status_code=401, detail="Not authenticated")
     
     try:
-        phone = sessions[session_id]["phone"]
+        phone = session.phone
         feed = feed_config_manager.get_feed(phone, feed_id)
         
         if not feed:
@@ -716,14 +744,12 @@ async def toggle_feed(
 @app.get("/api/feeds/export")
 async def export_feeds(session_id: Optional[str] = Cookie(None)):
     """Export user's feed configuration as JSON."""
-    if not session_id or session_id not in sessions:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    
-    if not sessions[session_id].get("authenticated"):
+    session = get_web_session(session_id) if session_id else None
+    if not session or not session.authenticated:
         raise HTTPException(status_code=401, detail="Not authenticated")
     
     try:
-        phone = sessions[session_id]["phone"]
+        phone = session.phone
         feeds = feed_config_manager.get_user_feeds(phone)
         
         # Convert feeds to list of dicts
@@ -743,14 +769,12 @@ async def import_feeds(
     session_id: Optional[str] = Cookie(None)
 ):
     """Import feeds from JSON."""
-    if not session_id or session_id not in sessions:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    
-    if not sessions[session_id].get("authenticated"):
+    session = get_web_session(session_id) if session_id else None
+    if not session or not session.authenticated:
         raise HTTPException(status_code=401, detail="Not authenticated")
     
     try:
-        phone = sessions[session_id]["phone"]
+        phone = session.phone
         data = await request.json()
         feeds_to_import = data.get("feeds", [])
         
@@ -806,10 +830,11 @@ async def import_feeds(
 async def get_subscription(request: Request):
     """Get current user subscription status."""
     session_id = request.cookies.get("session_id")
-    if not session_id or session_id not in sessions:
+    session = get_web_session(session_id) if session_id else None
+    if not session or not session.authenticated:
         raise HTTPException(status_code=401, detail="Not authenticated")
     
-    phone = sessions[session_id]["phone"]
+    phone = session.phone
     status = user_manager.get_subscription_status(phone)
     
     # Handle expired trial auto-downgrade with feed management
@@ -825,10 +850,11 @@ async def get_subscription(request: Request):
 async def activate_trial(request: Request):
     """Activate 3-day trial for current user."""
     session_id = request.cookies.get("session_id")
-    if not session_id or session_id not in sessions:
+    session = get_web_session(session_id) if session_id else None
+    if not session or not session.authenticated:
         raise HTTPException(status_code=401, detail="Not authenticated")
     
-    phone = sessions[session_id]["phone"]
+    phone = session.phone
     
     try:
         user_manager.start_trial(phone)
@@ -840,10 +866,11 @@ async def activate_trial(request: Request):
 async def upgrade_subscription(request: Request):
     """Upgrade current user to Premium."""
     session_id = request.cookies.get("session_id")
-    if not session_id or session_id not in sessions:
+    session = get_web_session(session_id) if session_id else None
+    if not session or not session.authenticated:
         raise HTTPException(status_code=401, detail="Not authenticated")
     
-    phone = sessions[session_id]["phone"]
+    phone = session.phone
     user_manager.upgrade_to_premium(phone, payment_method="manual")
     return {"status": "success", "tier": "premium"}
 
@@ -851,10 +878,11 @@ async def upgrade_subscription(request: Request):
 async def get_referral_info(request: Request):
     """Get referral info for current user."""
     session_id = request.cookies.get("session_id")
-    if not session_id or session_id not in sessions:
+    session = get_web_session(session_id) if session_id else None
+    if not session or not session.authenticated:
         raise HTTPException(status_code=401, detail="Not authenticated")
     
-    phone = sessions[session_id]["phone"]
+    phone = session.phone
     info = user_manager.get_referral_info(phone)
     if not info:
         raise HTTPException(status_code=404, detail="User not found")
@@ -864,10 +892,11 @@ async def get_referral_info(request: Request):
 async def get_tm(request: Request):
     """Dependency to get TelegramManager for current user."""
     session_id = request.cookies.get("session_id")
-    if not session_id or session_id not in sessions:
+    session = get_web_session(session_id) if session_id else None
+    if not session or not session.authenticated:
         raise HTTPException(status_code=401, detail="Not authenticated")
     
-    phone = sessions[session_id]["phone"]
+    phone = session.phone
     
     # Load session string from DB
     session_string = user_manager.get_session(phone)
@@ -885,14 +914,15 @@ async def create_payment_invoice(request: Request):
     Client should call this when user clicks "Upgrade with Telegram Stars"
     """
     session_id = request.cookies.get("session_id")
-    if not session_id or session_id not in sessions:
+    session = get_web_session(session_id) if session_id else None
+    if not session or not session.authenticated:
         raise HTTPException(status_code=401, detail="Not authenticated")
     
-    phone = sessions[session_id]["phone"]
+    phone = session.phone
     
     try:
         # Get user's Telegram ID from their session
-        user_identifier = sessions[session_id].get("user_identifier", phone)
+        user_identifier = session.user_identifier or phone
         manager = get_telegram_manager(user_identifier)
         client = await manager.initialize()
         me = await client.get_me()
@@ -1092,10 +1122,11 @@ async def get_payment_status(request: Request):
     Check if user has an active Premium subscription
     """
     session_id = request.cookies.get("session_id")
-    if not session_id or session_id not in sessions:
+    session = get_web_session(session_id) if session_id else None
+    if not session or not session.authenticated:
         raise HTTPException(status_code=401, detail="Not authenticated")
     
-    phone = sessions[session_id]["phone"]
+    phone = session.phone
     sub_status = user_manager.get_subscription_status(phone)
     
     return {
@@ -1114,10 +1145,11 @@ async def create_stripe_checkout(request: Request):
     Create Stripe Checkout session for card payment
     """
     session_id = request.cookies.get("session_id")
-    if not session_id or session_id not in sessions:
+    session = get_web_session(session_id) if session_id else None
+    if not session or not session.authenticated:
         raise HTTPException(status_code=401, detail="Not authenticated")
     
-    phone = sessions[session_id]["phone"]
+    phone = session.phone
     
     try:
         # Get payload from request
@@ -1149,7 +1181,7 @@ async def create_stripe_checkout(request: Request):
         # Get user's Telegram ID if linked (for metadata)
         telegram_id = None
         try:
-            user_identifier = sessions[session_id].get("user_identifier", phone)
+            user_identifier = session.user_identifier or phone
             manager = get_telegram_manager(user_identifier)
             client = await manager.initialize()
             me = await client.get_me()
@@ -1210,10 +1242,11 @@ async def create_upgrade_checkout(request: Request):
     Create a one-time checkout session for upgrading to Advanced (€1.00)
     """
     session_id = request.cookies.get("session_id")
-    if not session_id or session_id not in sessions:
+    session = get_web_session(session_id) if session_id else None
+    if not session or not session.authenticated:
         raise HTTPException(status_code=401, detail="Not authenticated")
     
-    phone = sessions[session_id]["phone"]
+    phone = session.phone
     
     try:
         # Get user to find existing subscription
@@ -1272,19 +1305,20 @@ async def verify_stripe_payment(
     This is a fallback/alternative to webhooks for client-side confirmation.
     """
     session_cookie = request.cookies.get("session_id")
-    if not session_cookie or session_cookie not in sessions:
+    web_session = get_web_session(session_cookie) if session_cookie else None
+    if not web_session or not web_session.authenticated:
         raise HTTPException(status_code=401, detail="Not authenticated")
     
     try:
         # Retrieve session from Stripe
-        session = await stripe_service.get_checkout_session(session_id)
+        stripe_session = await stripe_service.get_checkout_session(session_id)
         
-        if session.get("payment_status") == "paid":
+        if stripe_session.get("payment_status") == "paid":
             # Extract phone from metadata
-            phone = session.get("metadata", {}).get("phone")
+            phone = stripe_session.get("metadata", {}).get("phone")
             
             # Verify the phone matches the current user
-            current_phone = sessions[session_cookie]["phone"]
+            current_phone = web_session.phone
             
             if phone and phone == current_phone:
                 user_manager.upgrade_to_premium(phone, payment_method="stripe")
@@ -1410,10 +1444,11 @@ async def create_tbank_payment(request: Request):
     Initialize T-Bank payment for Russian users
     """
     session_id = request.cookies.get("session_id")
-    if not session_id or session_id not in sessions:
+    session = get_web_session(session_id) if session_id else None
+    if not session or not session.authenticated:
         raise HTTPException(status_code=401, detail="Not authenticated")
     
-    phone = sessions[session_id]["phone"]
+    phone = session.phone
     
     try:
         # Get payload from request
@@ -1566,7 +1601,8 @@ async def get_tbank_status(payment_id: str, request: Request):
     Check T-Bank payment status
     """
     session_id = request.cookies.get("session_id")
-    if not session_id or session_id not in sessions:
+    session = get_web_session(session_id) if session_id else None
+    if not session or not session.authenticated:
         raise HTTPException(status_code=401, detail="Not authenticated")
     
     try:
@@ -1586,10 +1622,11 @@ async def get_tbank_status(payment_id: str, request: Request):
 async def create_coinbase_charge(request: Request, body: models.CreateCoinbaseChargeRequest):
     """Create a Coinbase Commerce charge for Premium subscription."""
     session_id = request.cookies.get("session_id")
-    if not session_id or session_id not in sessions:
+    session = get_web_session(session_id) if session_id else None
+    if not session or not session.authenticated:
         raise HTTPException(status_code=401, detail="Not authenticated")
     
-    phone = sessions[session_id]["phone"]
+    phone = session.phone
     payload = body.payload
     
     # Define pricing based on payload

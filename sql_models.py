@@ -55,3 +55,14 @@ class UserSession(Base):
 
 # Update User to have relationship
 User.sessions = relationship("UserSession", back_populates="user", cascade="all, delete-orphan")
+
+class WebSession(Base):
+    __tablename__ = "web_sessions"
+
+    session_id = Column(String, primary_key=True, index=True)
+    phone = Column(String, nullable=True)
+    user_identifier = Column(String, nullable=True)
+    phone_code_hash = Column(String, nullable=True)
+    authenticated = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    expires_at = Column(DateTime)
