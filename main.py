@@ -1856,14 +1856,6 @@ async def database_viewer_status(admin_password: Optional[str] = Header(None, al
 @app.api_route("/db/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def proxy_db_viewer(request: Request, path: str):
     """Proxy requests to sqlite-web running on port 8080"""
-    global db_viewer_process
-    
-    # Check if viewer is running
-    if not db_viewer_process or db_viewer_process.poll() is not None:
-        raise HTTPException(
-            status_code=503,
-            detail="Database viewer is not running. Start it first at /admin/db-viewer/start"
-        )
     
     # Build target URL
     target_url = f"http://127.0.0.1:8080/{path}"
@@ -1871,7 +1863,7 @@ async def proxy_db_viewer(request: Request, path: str):
         target_url += f"?{request.url.query}"
     
     # Forward the request
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=10.0) as client:
         try:
             # Get the request body if any
             body = await request.body()
@@ -1895,7 +1887,12 @@ async def proxy_db_viewer(request: Request, path: str):
         except httpx.ConnectError:
             raise HTTPException(
                 status_code=503,
-                detail="Cannot connect to database viewer. It may still be starting up."
+                detail="Database viewer is not running on port 8080. Start it at /admin/db-viewer/start"
+            )
+        except httpx.TimeoutException:
+            raise HTTPException(
+                status_code=504,
+                detail="Database viewer timeout. It may be overloaded."
             )
         except Exception as e:
             logger.error(f"Proxy error: {e}")
