@@ -1721,6 +1721,8 @@ async def coinbase_webhook(request: Request):
 # Admin Database Viewer
 import subprocess
 import signal
+import httpx
+from starlette.responses import StreamingResponse
 
 db_viewer_process = None
 
@@ -1759,17 +1761,18 @@ async def start_database_viewer(admin_password: Optional[str] = Header(None, ali
         if not os.path.exists(db_path):
             raise HTTPException(status_code=404, detail=f"Database not found at {db_path}")
         
-        # Start sqlite-web in the background
-        # --url-prefix /db to make it accessible at /db
-        # --read-only for safety
+        # Start sqlite-web on localhost:8080 WITHOUT url-prefix
+        # We'll handle the /db prefix in our proxy
         db_viewer_process = subprocess.Popen([
             "sqlite_web",
             db_path,
-            "--host", "0.0.0.0",
+            "--host", "127.0.0.1",
             "--port", "8080",
-            "--url-prefix", "/db",
             "--read-only"
         ])
+        
+        # Wait a moment for it to start
+        await asyncio.sleep(1)
         
         logger.info(f"Started SQLite Web Viewer on port 8080 (PID: {db_viewer_process.pid})")
         
@@ -1848,3 +1851,59 @@ async def database_viewer_status(admin_password: Optional[str] = Header(None, al
             "status": "stopped",
             "pid": None
         }
+
+
+# Reverse proxy for /db to forward to sqlite-web on port 8080
+@app.api_route("/db/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def proxy_db_viewer(request: Request, path: str):
+    """Proxy requests to sqlite-web running on port 8080"""
+    global db_viewer_process
+    
+    # Check if viewer is running
+    if not db_viewer_process or db_viewer_process.poll() is not None:
+        raise HTTPException(
+            status_code=503,
+            detail="Database viewer is not running. Start it first at /admin/db-viewer/start"
+        )
+    
+    # Build target URL
+    target_url = f"http://127.0.0.1:8080/{path}"
+    if request.url.query:
+        target_url += f"?{request.url.query}"
+    
+    # Forward the request
+    async with httpx.AsyncClient() as client:
+        try:
+            # Get the request body if any
+            body = await request.body()
+            
+            # Forward the request
+            response = await client.request(
+                method=request.method,
+                url=target_url,
+                headers=dict(request.headers),
+                content=body,
+                follow_redirects=True
+            )
+            
+            # Return the response
+            return Response(
+                content=response.content,
+                status_code=response.status_code,
+                headers=dict(response.headers),
+                media_type=response.headers.get("content-type")
+            )
+        except httpx.ConnectError:
+            raise HTTPException(
+                status_code=503,
+                detail="Cannot connect to database viewer. It may still be starting up."
+            )
+        except Exception as e:
+            logger.error(f"Proxy error: {e}")
+            raise HTTPException(status_code=500, detail=f"Proxy error: {str(e)}")
+
+
+@app.get("/db")
+async def proxy_db_viewer_root(request: Request):
+    """Proxy root /db request to sqlite-web"""
+    return await proxy_db_viewer(request, "")
