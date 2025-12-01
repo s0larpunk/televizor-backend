@@ -276,9 +276,15 @@ class FeedWorker:
         """
         Forward message using the existing client connection.
         """
+    async def _forward_message(self, client, source_chat_id: int, destination_channel_id: int, message_id: int, delay_seconds: int):
+        """
+        Forward message using the existing client connection.
+        """
         try:
+            # Calculate schedule time if delay is requested
+            schedule_date = None
             if delay_seconds > 0:
-                await asyncio.sleep(delay_seconds)
+                schedule_date = datetime.utcnow() + timedelta(seconds=delay_seconds)
             
             # Resolve entity first to ensure we have the access hash
             try:
@@ -295,9 +301,14 @@ class FeedWorker:
             await client.forward_messages(
                 entity=destination_entity,
                 messages=message_id,
-                from_peer=source_chat_id
+                from_peer=source_chat_id,
+                schedule=schedule_date
             )
-            logger.info(f"Successfully forwarded message {message_id} from {source_chat_id} to {destination_channel_id}")
+            
+            if schedule_date:
+                logger.info(f"Successfully scheduled message {message_id} from {source_chat_id} to {destination_channel_id} for {schedule_date}")
+            else:
+                logger.info(f"Successfully forwarded message {message_id} from {source_chat_id} to {destination_channel_id}")
             
         except Exception as e:
             logger.error(f"Error forwarding message {message_id} to {destination_channel_id}: {e}")
