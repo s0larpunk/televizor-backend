@@ -1420,8 +1420,22 @@ async def verify_stripe_payment(
             current_phone = web_session.phone
             
             if phone and phone == current_phone:
-                user_manager.upgrade_to_premium(phone, payment_method="stripe")
-                logger.info(f"User {phone} upgraded to Premium via Stripe verification")
+                # Extract payload to determine tier/duration
+                payload = stripe_session.get("metadata", {}).get("payload", "premium_advanced")
+                tier = SubscriptionTier.PREMIUM_ADVANCED
+                duration_days = 30
+                
+                if payload == "premium_basic":
+                    tier = SubscriptionTier.PREMIUM_BASIC
+                elif payload == "premium_basic_year":
+                    tier = SubscriptionTier.PREMIUM_BASIC
+                    duration_days = 365
+                elif payload == "premium_advanced_year":
+                    tier = SubscriptionTier.PREMIUM_ADVANCED
+                    duration_days = 365
+
+                user_manager.upgrade_to_premium(phone, payment_method="stripe", tier=tier, duration_days=duration_days)
+                logger.info(f"User {phone} upgraded to Premium via Stripe verification (payload: {payload})")
                 return {"success": True, "status": "paid"}
             else:
                 logger.warning(f"Phone mismatch in Stripe verification: {phone} vs {current_phone}")
