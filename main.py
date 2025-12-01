@@ -192,28 +192,31 @@ async def health_check():
 @limiter.limit("5/minute")
 async def send_code(request: Request, body: models.SendCodeRequest, response: Response):
     """Send authentication code to phone number."""
+    # Normalize phone number (remove spaces)
+    normalized_phone = body.phone.replace(" ", "")
+    
     try:
         # Create a temporary session ID
         temp_session_id = str(uuid.uuid4())
         
         # Check if we have a known Telegram ID for this phone
         try:
-            status = user_manager.get_subscription_status(body.phone)
-            user_identifier = str(status.telegram_id) if status.telegram_id else body.phone
+            status = user_manager.get_subscription_status(normalized_phone)
+            user_identifier = str(status.telegram_id) if status.telegram_id else normalized_phone
         except Exception:
-            user_identifier = body.phone
+            user_identifier = normalized_phone
 
         manager = get_telegram_manager(user_identifier)
-        result = await manager.send_code(body.phone)
+        result = await manager.send_code(normalized_phone)
         
         is_authenticated = result.get("is_authenticated", False)
         
-        logger.info(f"Creating session for phone={body.phone}, session_id={temp_session_id}, phone_code_hash={result['phone_code_hash']}")
+        logger.info(f"Creating session for phone={normalized_phone}, session_id={temp_session_id}, phone_code_hash={result['phone_code_hash']}")
         
         # Store temporary session data in DB
         created_session = create_web_session(
             session_id=temp_session_id,
-            phone=body.phone,
+            phone=normalized_phone,
             user_identifier=user_identifier,
             phone_code_hash=result["phone_code_hash"],
             authenticated=is_authenticated
@@ -244,25 +247,28 @@ async def send_code(request: Request, body: models.SendCodeRequest, response: Re
 @limiter.limit("5/minute")
 async def verify_code(request: Request, body: models.VerifyCodeRequest, response: Response):
     """Verify the authentication code."""
+    # Normalize phone number (remove spaces)
+    normalized_phone = body.phone.replace(" ", "")
+    
     # Find session by phone and code hash
     db = SessionLocal()
     try:
         # Log what we're looking for
-        logger.info(f"Looking for session with phone={body.phone}, phone_code_hash={body.phone_code_hash}")
+        logger.info(f"Looking for session with phone={normalized_phone}, phone_code_hash={body.phone_code_hash}")
         
         # Check all sessions for this phone
-        all_sessions = db.query(WebSession).filter(WebSession.phone == body.phone).all()
-        logger.info(f"Found {len(all_sessions)} sessions for phone {body.phone}")
+        all_sessions = db.query(WebSession).filter(WebSession.phone == normalized_phone).all()
+        logger.info(f"Found {len(all_sessions)} sessions for phone {normalized_phone}")
         for s in all_sessions:
             logger.info(f"  Session {s.session_id[:8]}...: phone_code_hash={s.phone_code_hash}, authenticated={s.authenticated}")
         
         session = db.query(WebSession).filter(
-            WebSession.phone == body.phone,
+            WebSession.phone == normalized_phone,
             WebSession.phone_code_hash == body.phone_code_hash
         ).first()
         
         if not session:
-            logger.error(f"No matching session found for phone={body.phone}, phone_code_hash={body.phone_code_hash}")
+            logger.error(f"No matching session found for phone={normalized_phone}, phone_code_hash={body.phone_code_hash}")
             raise HTTPException(status_code=400, detail="Invalid session")
     finally:
         db.close()
