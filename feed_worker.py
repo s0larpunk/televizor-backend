@@ -279,9 +279,21 @@ class FeedWorker:
         try:
             if delay_seconds > 0:
                 await asyncio.sleep(delay_seconds)
-                
+            
+            # Resolve entity first to ensure we have the access hash
+            try:
+                destination_entity = await client.get_input_entity(destination_channel_id)
+            except ValueError:
+                # If it's a user ID, maybe we need to force fetch or it's 'me'
+                logger.warning(f"Could not resolve entity {destination_channel_id} from cache. Attempting to fetch...")
+                try:
+                    destination_entity = await client.get_entity(destination_channel_id)
+                except Exception as fetch_err:
+                    logger.error(f"Failed to fetch entity {destination_channel_id}: {fetch_err}")
+                    raise fetch_err
+
             await client.forward_messages(
-                entity=destination_channel_id,
+                entity=destination_entity,
                 messages=message_id,
                 from_peer=source_chat_id
             )
