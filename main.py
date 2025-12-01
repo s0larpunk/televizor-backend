@@ -1767,8 +1767,7 @@ async def start_database_viewer(admin_password: Optional[str] = Header(None, ali
             "sqlite_web",
             db_path,
             "--host", "127.0.0.1",
-            "--port", "8080",
-            "--read-only"
+            "--port", "8080"
         ])
         
         # Wait a moment for it to start
@@ -1781,7 +1780,7 @@ async def start_database_viewer(admin_password: Optional[str] = Header(None, ali
             "message": "Database viewer started successfully",
             "url": "/db",
             "pid": db_viewer_process.pid,
-            "note": "The viewer is running in read-only mode for safety"
+            "note": "The viewer allows editing - use with caution!"
         }
         
     except FileNotFoundError:
