@@ -208,14 +208,18 @@ async def send_code(request: Request, body: models.SendCodeRequest, response: Re
         
         is_authenticated = result.get("is_authenticated", False)
         
+        logger.info(f"Creating session for phone={body.phone}, session_id={temp_session_id}, phone_code_hash={result['phone_code_hash']}")
+        
         # Store temporary session data in DB
-        create_web_session(
+        created_session = create_web_session(
             session_id=temp_session_id,
             phone=body.phone,
             user_identifier=user_identifier,
             phone_code_hash=result["phone_code_hash"],
             authenticated=is_authenticated
         )
+        
+        logger.info(f"✓ Session created successfully: {created_session.session_id}")
         
         # If already authenticated, set the cookie immediately
         if is_authenticated:
