@@ -30,6 +30,7 @@ from coinbase_payment import coinbase_service
 import json
 import logging
 from datetime import datetime, timedelta
+from sqlalchemy import text
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -37,8 +38,27 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Log database connection info
+    logger.info(f"Database URL set: {bool(os.getenv('DATABASE_URL'))}")
+    logger.info(f"Database engine: {engine.url}")
+    logger.info(f"Registered models: {', '.join([table.name for table in Base.metadata.tables.values()])}")
+    
     # Ensure database tables exist
-    Base.metadata.create_all(bind=engine)
+    try:
+        Base.metadata.create_all(bind=engine)
+        logger.info(f"✓ Successfully created {len(Base.metadata.tables)} tables")
+        
+        # Verify tables were created
+        with engine.connect() as conn:
+            if 'postgresql' in str(engine.url):
+                result = conn.execute(text("SELECT tablename FROM pg_tables WHERE schemaname='public'"))
+                tables = [row[0] for row in result]
+                logger.info(f"PostgreSQL tables: {tables}")
+            else:
+                logger.info("Using SQLite database")
+    except Exception as e:
+        logger.error(f"Error creating tables: {e}")
+        raise
     
     # Startup: Start the feed worker in the background
     worker_task = asyncio.create_task(start_feed_worker())
