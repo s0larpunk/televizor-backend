@@ -243,15 +243,25 @@ async def verify_code(request: Request, body: models.VerifyCodeRequest, response
     # Find session by phone and code hash
     db = SessionLocal()
     try:
+        # Log what we're looking for
+        logger.info(f"Looking for session with phone={body.phone}, phone_code_hash={body.phone_code_hash}")
+        
+        # Check all sessions for this phone
+        all_sessions = db.query(WebSession).filter(WebSession.phone == body.phone).all()
+        logger.info(f"Found {len(all_sessions)} sessions for phone {body.phone}")
+        for s in all_sessions:
+            logger.info(f"  Session {s.session_id[:8]}...: phone_code_hash={s.phone_code_hash}, authenticated={s.authenticated}")
+        
         session = db.query(WebSession).filter(
             WebSession.phone == body.phone,
             WebSession.phone_code_hash == body.phone_code_hash
         ).first()
+        
+        if not session:
+            logger.error(f"No matching session found for phone={body.phone}, phone_code_hash={body.phone_code_hash}")
+            raise HTTPException(status_code=400, detail="Invalid session")
     finally:
         db.close()
-    
-    if not session:
-        raise HTTPException(status_code=400, detail="Invalid session")
     
     session_id = session.session_id
     
