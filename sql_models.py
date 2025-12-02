@@ -18,16 +18,16 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     
     referral_code = Column(String, unique=True, index=True, nullable=True)
-    referred_by = Column(String, ForeignKey("users.phone"), nullable=True)
+    referred_by = Column(String, ForeignKey("users.phone", ondelete="SET NULL"), nullable=True)
     referral_count = Column(Integer, default=0)
 
-    feeds = relationship("Feed", back_populates="owner")
+    feeds = relationship("Feed", back_populates="owner", cascade="all, delete-orphan")
 
 class Feed(Base):
     __tablename__ = "feeds"
 
     id = Column(String, primary_key=True, index=True)
-    user_id = Column(String, ForeignKey("users.phone"))
+    user_id = Column(String, ForeignKey("users.phone", ondelete="CASCADE"))
     name = Column(String)
     source_channel_ids = Column(JSON)  # List of integers
     destination_channel_id = Column(BigInteger)
@@ -44,7 +44,7 @@ class UserSession(Base):
     __tablename__ = "user_sessions"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_phone = Column(String, ForeignKey("users.phone"), nullable=False)
+    user_phone = Column(String, ForeignKey("users.phone", ondelete="CASCADE"), nullable=False)
     session_string = Column(String, nullable=False)
     instance_id = Column(String, default="default", nullable=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)

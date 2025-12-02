@@ -3,6 +3,7 @@ import logging
 from typing import Dict, Set
 from datetime import datetime, timedelta
 from telethon import TelegramClient, events, utils
+from telethon.errors import SessionRevokedError, AuthKeyError
 from telegram_client import get_telegram_manager
 from feed_manager import FeedConfigManager
 from user_manager import UserManager
@@ -113,6 +114,16 @@ class FeedWorker:
             max_daily=filters.max_messages_per_day
         )
 
+    async def _wait_and_flush(self, key, callback):
+        """Wait for a short duration and then flush the album."""
+        try:
+            await asyncio.sleep(2.0)
+            await callback(key)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Error in album flush timer: {e}")
+
     async def _setup_user_handlers(self, user_id: str, feeds: list, sub_status):
         """Set up message handlers for a user's feeds."""
         try:
@@ -172,6 +183,41 @@ class FeedWorker:
                         source_to_feeds[source_id] = []
                     source_to_feeds[source_id].append(feed)
             
+            # Album buffering: (source_id, grouped_id) -> { 'message_ids': set, 'timer': Task, 'feeds': list }
+            pending_albums = {}
+
+            async def flush_album(key):
+                if key not in pending_albums:
+                    return
+                
+                data = pending_albums.pop(key)
+                source_id = key[0]
+                message_ids = sorted(list(data['message_ids']))
+                feeds_to_process = data['feeds']
+                
+                logger.info(f"Flushing album {key[1]} with {len(message_ids)} messages from {source_id}")
+                
+                for feed in feeds_to_process:
+                    try:
+                        # We use the first message for filter checks in the album?
+                        # Or we should have filtered them individually before adding?
+                        # If we filter individually, we might drop some parts of the album.
+                        # But `handler` logic below does filtering BEFORE buffering.
+                        # So `message_ids` here are already filtered/approved.
+                        
+                        delay = 15 if getattr(feed, 'delay_enabled', True) else 0
+                        asyncio.create_task(
+                            self._forward_message(
+                                client=client,
+                                source_chat_id=source_id,
+                                destination_channel_id=feed.destination_channel_id,
+                                message_id=message_ids, # Pass list
+                                delay_seconds=delay
+                            )
+                        )
+                    except Exception as e:
+                        logger.error(f"Error flushing album to feed {feed.id}: {e}")
+
             # Register handler for new messages
             # We'll listen to ALL messages and filter inside to debug ID mismatches
             @client.on(events.NewMessage())
@@ -185,75 +231,84 @@ class FeedWorker:
                     peer_id = utils.get_peer_id(event.message.peer_id)
                     normalized_id = utils.get_peer_id(event.message.peer_id, add_mark=False)
                     
-                    logger.info(f"DEBUG: Event received. ChatID: {chat_id}, PeerID: {peer_id}, Normalized: {normalized_id}")
-                    logger.info(f"DEBUG: Monitored sources: {list(source_to_feeds.keys())}")
+                    # logger.info(f"DEBUG: Event received. ChatID: {chat_id}, PeerID: {peer_id}, Normalized: {normalized_id}")
                     
                     if normalized_id not in source_to_feeds:
-                        # logger.debug(f"Ignoring message from {normalized_id} (not in monitored sources)")
                         return
 
                     source_channel_id = normalized_id
-
-                    
                     relevant_feeds = source_to_feeds.get(source_channel_id, [])
-                    logger.info(f"Found {len(relevant_feeds)} relevant feeds for source {source_channel_id}")
                     
                     if not relevant_feeds:
-                        logger.warning(f"No feeds found for source {source_channel_id}. Available sources: {list(source_to_feeds.keys())}")
                         return
                     
+                    # Check if this is part of an album
+                    grouped_id = event.message.grouped_id
+                    
+                    # Filter feeds first
+                    valid_feeds = []
                     for feed in relevant_feeds:
-                        try:
-                            logger.info(f"Processing feed {feed.id} for message {event.message.id}")
-                            # 1. Check Source Filters & Limits
-                            source_filter = feed.source_filters.get(source_channel_id) if feed.source_filters else None
-                            if source_filter:
-                                if not is_advanced:
-                                    # Skip filtering for basic users (or block if filter exists? 
-                                    # Logic in main.py prevents activating feeds with filters for non-advanced.
-                                    # But if they downgrade, we should probably ignore filters or block feed.
-                                    # Let's block the feed if it has filters and user is not advanced.
-                                    logger.info(f"Skipping feed {feed.id} - Filters require Advanced Premium")
-                                    continue
-                                    
-                                if not self._check_filters(event.message, source_filter):
-                                    logger.info(f"Filtered by source filter: {source_filter}")
-                                    continue
-                                if not self._check_rate_limit(user_id, f"source_{source_channel_id}", source_filter):
-                                    logger.info(f"Rate limit reached for feed {feed.id} source {source_channel_id}")
-                                    continue
+                        # 1. Check Source Filters & Limits
+                        source_filter = feed.source_filters.get(source_channel_id) if feed.source_filters else None
+                        if source_filter:
+                            if not is_advanced:
+                                continue
+                            if not self._check_filters(event.message, source_filter):
+                                continue
+                            if not self._check_rate_limit(user_id, f"source_{source_channel_id}", source_filter):
+                                continue
 
-                            # 2. Check Global Filters & Limits
-                            if feed.filters:
-                                if not is_advanced:
-                                    logger.info(f"Skipping feed {feed.id} - Filters require Advanced Premium")
-                                    continue
+                        # 2. Check Global Filters & Limits
+                        if feed.filters:
+                            if not is_advanced:
+                                continue
+                            if not self._check_filters(event.message, feed.filters):
+                                continue
+                            if not self._check_rate_limit(user_id, f"feed_{feed.id}", feed.filters):
+                                continue
+                        
+                        valid_feeds.append(feed)
+                    
+                    if not valid_feeds:
+                        return
 
-                                if not self._check_filters(event.message, feed.filters):
-                                    logger.info(f"Filtered by global filter: {feed.filters}")
-                                    continue
-                                if not self._check_rate_limit(user_id, f"feed_{feed.id}", feed.filters):
-                                    logger.info(f"Global rate limit reached for feed {feed.id}")
-                                    continue
-
-                            # 3. Queue for Forwarding
-                            delay = 15 if getattr(feed, 'delay_enabled', True) else 0
-                            
-                            # Use in-process forwarding to avoid SQLite lock issues
-                            asyncio.create_task(
-                                self._forward_message(
-                                    client=client,
-                                    source_chat_id=source_channel_id,
-                                    destination_channel_id=feed.destination_channel_id,
-                                    message_id=event.message.id,
-                                    delay_seconds=delay
+                    if grouped_id:
+                        key = (source_channel_id, grouped_id)
+                        if key not in pending_albums:
+                            pending_albums[key] = {
+                                'message_ids': set(),
+                                'feeds': valid_feeds, # Assuming feeds are same for all msgs in album
+                                'timer': None
+                            }
+                        
+                        pending_albums[key]['message_ids'].add(event.message.id)
+                        
+                        # Debounce
+                        if pending_albums[key]['timer']:
+                            pending_albums[key]['timer'].cancel()
+                        
+                        # Wait 2 seconds for more messages
+                        pending_albums[key]['timer'] = asyncio.create_task(
+                            self._wait_and_flush(key, flush_album)
+                        )
+                    else:
+                        # Single message
+                        for feed in valid_feeds:
+                            try:
+                                logger.info(f"Processing feed {feed.id} for message {event.message.id}")
+                                delay = 15 if getattr(feed, 'delay_enabled', True) else 0
+                                asyncio.create_task(
+                                    self._forward_message(
+                                        client=client,
+                                        source_chat_id=source_channel_id,
+                                        destination_channel_id=feed.destination_channel_id,
+                                        message_id=event.message.id,
+                                        delay_seconds=delay
+                                    )
                                 )
-                            )
-                            
-                            logger.info(f"Queued message {event.message.id} for forwarding to {feed.destination_channel_id}")
-                            
-                        except Exception as e:
-                            logger.error(f"Error processing feed {feed.id}: {e}")
+                                logger.info(f"Queued message {event.message.id} for forwarding to {feed.destination_channel_id}")
+                            except Exception as e:
+                                logger.error(f"Error processing feed {feed.id}: {e}")
                             
                 except Exception as e:
                     logger.error(f"Error in message handler: {e}")
@@ -269,6 +324,19 @@ class FeedWorker:
             
             logger.info(f"Set up handlers for user {user_id} with {len(feeds)} feeds")
             
+        except (SessionRevokedError, AuthKeyError) as e:
+            logger.error(f"Session revoked for user {user_id}: {e}")
+            # Stop processing for this user
+            if user_id in self.active_handlers:
+                self.active_handlers[user_id].clear()
+                del self.active_handlers[user_id]
+            # We could cleanup client here, but let's leave it to the main app or next retry
+            # Actually, if we don't cleanup, it might keep trying with bad session?
+            # But `_setup_user_handlers` is called when config changes.
+            # If session is bad, we should probably stop trying until re-login.
+            # For now, just logging is enough to prevent crash loop if we were crashing.
+            # But we were catching Exception, so it wasn't crashing.
+            # This specific catch just makes it explicit.
         except Exception as e:
             logger.error(f"Failed to setup handlers for user {user_id}: {e}")
 
@@ -276,7 +344,7 @@ class FeedWorker:
         """
         Forward message using the existing client connection.
         """
-    async def _forward_message(self, client, source_chat_id: int, destination_channel_id: int, message_id: int, delay_seconds: int):
+    async def _forward_message(self, client, source_chat_id: int, destination_channel_id: int, message_id: any, delay_seconds: int):
         """
         Forward message using the existing client connection.
         """
@@ -305,10 +373,12 @@ class FeedWorker:
                 schedule=schedule_date
             )
             
+            msg_desc = f"messages {message_id}" if isinstance(message_id, list) else f"message {message_id}"
+            
             if schedule_date:
-                logger.info(f"Successfully scheduled message {message_id} from {source_chat_id} to {destination_channel_id} for {schedule_date}")
+                logger.info(f"Successfully scheduled {msg_desc} from {source_chat_id} to {destination_channel_id} for {schedule_date}")
             else:
-                logger.info(f"Successfully forwarded message {message_id} from {source_chat_id} to {destination_channel_id}")
+                logger.info(f"Successfully forwarded {msg_desc} from {source_chat_id} to {destination_channel_id}")
             
         except Exception as e:
             logger.error(f"Error forwarding message {message_id} to {destination_channel_id}: {e}")

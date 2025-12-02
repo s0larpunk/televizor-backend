@@ -113,3 +113,4 @@ class SubscriptionStatus(BaseModel):
 
 class CreateCoinbaseChargeRequest(BaseModel):
     payload: str = "premium_advanced"
+    duration_months: int = 1
