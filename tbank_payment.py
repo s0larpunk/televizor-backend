@@ -117,7 +117,7 @@ class TBankPaymentService:
         data_obj = {}
         
         # Add connection_type for widget integration
-        data_obj["connection_type"] = "Widget"
+        # data_obj["connection_type"] = "Widget"
         
         # Add metadata if provided
         if metadata:
