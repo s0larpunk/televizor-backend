@@ -299,6 +299,8 @@ class UserManager:
 
                     except Exception as e:
                         logger.error(f"Error handling feeds during downgrade for {phone}: {e}")
+        finally:
+            db.close()
 
     def calculate_upgrade_cost(self, phone: str, target_tier: str) -> dict:
         """
