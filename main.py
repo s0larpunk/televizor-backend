@@ -1222,31 +1222,75 @@ async def payment_webhook(
                     logger.error(f"Error upgrading user: {e}")
 
         # Handle /start command (Deep Linking)
+        # Handle commands
         elif "message" in update and "text" in update["message"]:
             text = update["message"]["text"]
             chat_id = update["message"]["chat"]["id"]
             
-            if text == "/start upgrade":
-                # User clicked the deep link
-                # We need to find the user by Telegram ID to link them (if not already linked)
-                # But here we only have Telegram ID. 
-                # The user MUST have logged in via the web app first, which links the ID.
-                # If not linked, we can't upgrade them properly later.
-                
-                # Check if we know this user
-                phone = user_manager.get_phone_by_telegram_id(chat_id)
-                if not phone:
-                    await payment_service.send_message(
-                        chat_id,
-                        "⚠️ Please log in to the web dashboard first to link your account."
-                    )
+            # Normalize text
+            parts = text.split()
+            command = parts[0] if parts else ""
+            args = parts[1:] if len(parts) > 1 else []
+            
+            if command == "/start":
+                if args and args[0] == "upgrade":
+                    # User clicked the deep link for upgrade
+                    # Check if we know this user
+                    phone = user_manager.get_phone_by_telegram_id(chat_id)
+                    if not phone:
+                        await payment_service.send_message(
+                            chat_id,
+                            "⚠️ Please log in to the web dashboard first to link your account."
+                        )
+                    else:
+                        await payment_service.create_invoice(
+                            chat_id=chat_id,
+                            title="Televizor Premium",
+                            description="Unlock unlimited feeds and advanced filters",
+                            payload="premium_monthly"
+                        )
                 else:
-                    await payment_service.create_invoice(
-                        chat_id=chat_id,
-                        title="Televizor Premium",
-                        description="Unlock unlimited feeds and advanced filters",
-                        payload="premium_monthly"
+                    # General /start message
+                    welcome_msg = (
+                        "<b>Welcome to Televizor! 📺</b>\n\n"
+                        "I can help you manage your Telegram feeds. Here's what I can do:\n\n"
+                        "/about - How it works\n"
+                        "/bonus - Get free Premium\n"
+                        "/help - Show commands\n\n"
+                        f"To get started, visit our website: <a href='{config.FRONTEND_URL}'>Televizor Web App</a>"
                     )
+                    await payment_service.send_message(chat_id, welcome_msg, parse_mode="HTML")
+            
+            elif command == "/about":
+                about_msg = (
+                    "<b>About Televizor</b>\n\n"
+                    "Televizor allows you to aggregate multiple Telegram channels into a single custom feed. "
+                    "It helps you declutter your chat list and focus on what matters.\n\n"
+                    "1. Log in to the website\n"
+                    "2. Create a feed\n"
+                    "3. Add source channels (even from folders!)\n"
+                    "4. Enjoy your clean news stream!\n\n"
+                    f"Visit <a href='{config.FRONTEND_URL}'>Televizor</a> to start."
+                )
+                await payment_service.send_message(chat_id, about_msg, parse_mode="HTML")
+                
+            elif command == "/bonus":
+                bonus_msg = (
+                    "<b>Invite friends & Get Premium! 🎁</b>\n\n"
+                    "For every friend who joins using your referral link, you both get extra Premium time.\n\n"
+                    f"Log in to your <a href='{config.FRONTEND_URL}/dashboard'>Dashboard</a> to get your unique referral link."
+                )
+                await payment_service.send_message(chat_id, bonus_msg, parse_mode="HTML")
+                
+            elif command == "/help":
+                help_msg = (
+                    "<b>Available Commands:</b>\n\n"
+                    "/start - Start the bot\n"
+                    "/about - How it works\n"
+                    "/bonus - Referral program\n"
+                    "/help - Show this message"
+                )
+                await payment_service.send_message(chat_id, help_msg, parse_mode="HTML")
             
         return {"ok": True}
         

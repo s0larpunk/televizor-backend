@@ -83,7 +83,7 @@ class TelegramPaymentService:
         description: str = "Unlock unlimited feeds and advanced filters",
         payload: str = "premium_monthly",
         price: int = 150,
-        photo_url: str = "https://em-content.zobj.net/source/apple/81/television_1f4fa.png"
+        photo_url: str = f"{config.FRONTEND_URL}/televizor_premium.jpg"
     ) -> Dict[str, Any]:
         """
         Create and send payment invoice to user
@@ -148,10 +148,12 @@ class TelegramPaymentService:
             logger.error(f"Error sending invoice: {e}")
             raise
     
-    async def send_message(self, chat_id: int, text: str) -> bool:
+    async def send_message(self, chat_id: int, text: str, parse_mode: str = None) -> bool:
         """Send a text message to a chat."""
         url = f"{self.api_base}/sendMessage"
         data = {"chat_id": chat_id, "text": text}
+        if parse_mode:
+            data["parse_mode"] = parse_mode
         
         try:
             async with httpx.AsyncClient() as client:
