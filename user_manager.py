@@ -346,34 +346,20 @@ class UserManager:
                 # User request: "payment for 5 months would be 5/12 * €10"
                 # So if they have ~5 months left, it's a yearly plan.
                 
-                if remaining_days > 35:
-                    # Yearly Upgrade
-                    # Formula: (Remaining Months / 12) * €10
-                    # Remaining Months = Remaining Days / 30.44 ? 
-                    # Let's use exact fraction of year: Remaining Days / 365
-                    # Cost = (Remaining Days / 365) * 10.00
-                    
-                    cost = (remaining_days / 365.0) * 10.00
-                    cost = round(cost, 2)
-                    if cost < 0.50: cost = 0.50 # Minimum charge
-                    
-                    return {
-                        "amount": cost, 
-                        "currency": "EUR", 
-                        "description": f"Upgrade to Advanced (Yearly Upgraded for {remaining_days} days)",
-                        "is_prorated": True,
-                        "upgrade_type": "yearly"
-                    }
-                else:
-                    # Monthly Upgrade
-                    # User request: "upgrade from basic to advanced per month ... set to 1 euro"
-                    return {
-                        "amount": 1.00, 
-                        "currency": "EUR", 
-                        "description": "Upgrade to Advanced (Monthly Upgraded)",
-                        "is_prorated": True,
-                        "upgrade_type": "monthly"
-                    }
+                # Round up to nearest month
+                import math
+                remaining_months = math.ceil(remaining_days / 30.0)
+                if remaining_months < 1: remaining_months = 1
+                
+                cost = remaining_months * 1.00 # 1 EUR per month difference
+                
+                return {
+                    "amount": cost, 
+                    "currency": "EUR", 
+                    "description": f"Upgrade to Advanced ({remaining_months} Months Upgraded)",
+                    "is_prorated": True,
+                    "upgrade_type": "monthly_prorated"
+                }
 
             return {"amount": 0, "currency": "EUR", "description": "Unknown upgrade path"}
             

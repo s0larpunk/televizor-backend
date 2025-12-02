@@ -1064,7 +1064,36 @@ async def create_payment_invoice(request: Request):
             payload = "premium_advanced"
             duration_months = 1
 
-        if payload == "premium_advanced_year":
+        # Calculate price based on payload
+        if payload == "premium_advanced_upgrade":
+            # Dynamic Upgrade + Extend Logic
+            user = user_manager.get_user_by_phone(phone)
+            remaining_days = (user.expiry_date - datetime.utcnow()).days if user.expiry_date else 0
+            import math
+            existing_months = math.ceil(remaining_days / 30.0)
+            if existing_months < 1: existing_months = 1 # Minimum 1 month upgrade if active
+            
+            requested_total_months = duration_months
+            extension_months = max(0, requested_total_months - existing_months)
+            
+            # Price: 150 stars (upgrade) vs 250 stars (full)
+            # Assuming 1 EUR = 75 Stars approx (based on 2 EUR = 150 Stars)
+            # Upgrade: 1 EUR = 75 Stars
+            # Full: 3 EUR = 250 Stars (approx 83/EUR, let's stick to 250)
+            
+            upgrade_cost = existing_months * 75
+            extension_cost = extension_months * 250
+            price_stars = upgrade_cost + extension_cost
+            
+            title = f"Upgrade to Advanced ({existing_months}mo) + {extension_months}mo"
+            description = f"Upgrade existing time and extend by {extension_months} months"
+            
+            # Webhook should only add extension time
+            duration_months = extension_months
+            # Payload becomes standard advanced
+            payload = "premium_advanced"
+            
+        elif payload == "premium_advanced_year":
             price_stars = 2500
             title = "Televizor Premium Advanced (Yearly)"
             description = "Unlimited feeds + Filters (1 Year)"
@@ -1084,8 +1113,8 @@ async def create_payment_invoice(request: Request):
             title = "Televizor Premium Advanced"
             description = "Unlimited feeds + Filters"
 
-        # Multiply by duration for monthly plans
-        if "year" not in payload:
+        # Multiply by duration for monthly plans (standard flow)
+        if "year" not in payload and "upgrade" not in title: # Skip if already calculated for upgrade
             price_stars = price_stars * duration_months
             if duration_months > 1:
                 title = f"{title} ({duration_months} Months)"
@@ -1099,7 +1128,7 @@ async def create_payment_invoice(request: Request):
             title=title,
             description=description,
             payload=encoded_payload,
-            price=price_stars
+            price=int(price_stars)
         )
         
         return {
@@ -1393,7 +1422,40 @@ async def create_stripe_checkout(request: Request):
         product_name = "Televizor Premium Advanced"
         interval = "month"
         
-        if payload == "premium_basic":
+        if payload == "premium_advanced_upgrade":
+            # Dynamic Upgrade + Extend Logic
+            user = user_manager.get_user_by_phone(phone)
+            remaining_days = (user.expiry_date - datetime.utcnow()).days if user.expiry_date else 0
+            import math
+            existing_months = math.ceil(remaining_days / 30.0)
+            if existing_months < 1: existing_months = 1
+            
+            requested_total_months = duration_months
+            extension_months = max(0, requested_total_months - existing_months)
+            
+            # Price: 100 cents (upgrade) vs 300 cents (full)
+            upgrade_cost = existing_months * 100
+            extension_cost = extension_months * 300
+            unit_amount = upgrade_cost + extension_cost
+            
+            product_name = f"Upgrade to Advanced ({existing_months}mo) + {extension_months}mo"
+            
+            # Webhook should only add extension time
+            duration_months = extension_months
+            # Payload becomes standard advanced for metadata
+            payload = "premium_advanced"
+            
+            # For Stripe, we set quantity to 1 because we calculated total price in unit_amount
+            # But wait, create_checkout_session uses unit_amount * quantity.
+            # So we should set quantity=1 and unit_amount=total_price.
+            # We need to override the default logic below which sets quantity=duration_months.
+            # Let's handle it by setting duration_months=1 for the quantity param, 
+            # but passing the REAL extension months in metadata.
+            
+            real_extension_months = extension_months
+            duration_months = 1 # For quantity
+            
+        elif payload == "premium_basic":
             unit_amount = 200
             product_name = "Televizor Premium Basic"
         elif payload == "premium_basic_year":
@@ -1434,7 +1496,7 @@ async def create_stripe_checkout(request: Request):
                 "phone": phone,
                 "telegram_id": str(telegram_id) if telegram_id else "",
                 "payload": payload, # Store payload to know which tier to upgrade to
-                "duration_months": str(duration_months)
+                "duration_months": str(real_extension_months) if 'real_extension_months' in locals() else str(duration_months)
             },
             line_items=[{
                 'price_data': {
@@ -1736,7 +1798,27 @@ async def create_tbank_payment(request: Request):
         # Amount in kopecks (₽200.00 = 20000 kopecks, ₽300.00 = 30000 kopecks)
         # Year: ₽2000 = 200000, ₽3000 = 300000
         amount = 30000
-        if payload == "premium_basic":
+        
+        if payload == "premium_advanced_upgrade":
+            user = user_manager.get_user_by_phone(phone)
+            remaining_days = (user.expiry_date - datetime.utcnow()).days if user.expiry_date else 0
+            import math
+            existing_months = math.ceil(remaining_days / 30.0)
+            if existing_months < 1: existing_months = 1
+            
+            requested_total_months = duration_months
+            extension_months = max(0, requested_total_months - existing_months)
+            
+            # Price: 100 RUB (upgrade) vs 300 RUB (full) -> 10000 vs 30000 kopecks
+            upgrade_cost = existing_months * 10000
+            extension_cost = extension_months * 30000
+            amount = upgrade_cost + extension_cost
+            
+            # Webhook should only add extension time
+            duration_months = extension_months
+            payload = "premium_advanced"
+            
+        elif payload == "premium_basic":
             amount = 20000
         elif payload == "premium_basic_year":
             amount = 200000
@@ -1921,7 +2003,28 @@ async def create_coinbase_charge(request: Request, body: models.CreateCoinbaseCh
     amount = plan["amount"]
     description = plan["description"]
     
-    if "year" in payload:
+    if payload == "premium_advanced_upgrade":
+        user = user_manager.get_user_by_phone(phone)
+        remaining_days = (user.expiry_date - datetime.utcnow()).days if user.expiry_date else 0
+        import math
+        existing_months = math.ceil(remaining_days / 30.0)
+        if existing_months < 1: existing_months = 1
+        
+        requested_total_months = duration_months
+        extension_months = max(0, requested_total_months - existing_months)
+        
+        # Price: 1 EUR (upgrade) vs 3 EUR (full)
+        upgrade_cost = existing_months * 1.00
+        extension_cost = extension_months * 3.00
+        amount = upgrade_cost + extension_cost
+        
+        description = f"Upgrade to Advanced ({existing_months}mo) + {extension_months}mo"
+        
+        # Webhook should only add extension time
+        duration_months = extension_months
+        payload = "premium_advanced"
+        
+    elif "year" in payload:
         duration_months = 1 # Yearly is 1 unit
     else:
         amount = amount * duration_months
