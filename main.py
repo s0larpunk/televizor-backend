@@ -1568,8 +1568,9 @@ async def verify_stripe_payment(
             if phone and phone == current_phone:
                 # Extract payload to determine tier/duration
                 payload = stripe_session.get("metadata", {}).get("payload", "premium_advanced")
+                duration_months = int(stripe_session.get("metadata", {}).get("duration_months", 1))
                 tier = SubscriptionTier.PREMIUM_ADVANCED
-                duration_days = 30
+                duration_days = 30 * duration_months
                 
                 if payload == "premium_basic":
                     tier = SubscriptionTier.PREMIUM_BASIC
@@ -1651,8 +1652,9 @@ async def stripe_webhook(request: Request):
                 # Regular subscription payment
                 # Extract payload/tier from metadata
                 payload = session.get("metadata", {}).get("payload", "premium_advanced")
+                duration_months = int(session.get("metadata", {}).get("duration_months", 1))
                 tier = SubscriptionTier.PREMIUM_ADVANCED
-                duration_days = 30
+                duration_days = 30 * duration_months
                 
                 if payload == "premium_basic":
                     tier = SubscriptionTier.PREMIUM_BASIC
@@ -1834,16 +1836,19 @@ async def tbank_webhook(request: Request):
                     tier = SubscriptionTier.PREMIUM_ADVANCED
                     duration_days = 30
                     
-                    if result.get("data") and result["data"].get("payload"):
-                         payload = result["data"].get("payload")
-                         if payload == "premium_basic":
-                             tier = SubscriptionTier.PREMIUM_BASIC
-                         elif payload == "premium_basic_year":
-                             tier = SubscriptionTier.PREMIUM_BASIC
-                             duration_days = 365
-                         elif payload == "premium_advanced_year":
-                             tier = SubscriptionTier.PREMIUM_ADVANCED
-                             duration_days = 365
+                    if result.get("data"):
+                        payload = result["data"].get("payload")
+                        duration_months = int(result["data"].get("duration_months", 1))
+                        duration_days = 30 * duration_months
+                        
+                        if payload == "premium_basic":
+                            tier = SubscriptionTier.PREMIUM_BASIC
+                        elif payload == "premium_basic_year":
+                            tier = SubscriptionTier.PREMIUM_BASIC
+                            duration_days = 365
+                        elif payload == "premium_advanced_year":
+                            tier = SubscriptionTier.PREMIUM_ADVANCED
+                            duration_days = 365
                     
                     # Upgrade user to premium
                     user_manager.upgrade_to_premium(phone, payment_method="tbank", tier=tier, duration_days=duration_days)

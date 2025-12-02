@@ -360,7 +360,7 @@ class UserManager:
                     return {
                         "amount": cost, 
                         "currency": "EUR", 
-                        "description": f"Upgrade to Advanced (Yearly Prorated for {remaining_days} days)",
+                        "description": f"Upgrade to Advanced (Yearly Upgraded for {remaining_days} days)",
                         "is_prorated": True,
                         "upgrade_type": "yearly"
                     }
@@ -370,7 +370,7 @@ class UserManager:
                     return {
                         "amount": 1.00, 
                         "currency": "EUR", 
-                        "description": "Upgrade to Advanced (Monthly Fixed)",
+                        "description": "Upgrade to Advanced (Monthly Upgraded)",
                         "is_prorated": True,
                         "upgrade_type": "monthly"
                     }
