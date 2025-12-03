@@ -310,13 +310,16 @@ async def verify_code(request: Request, body: models.VerifyCodeRequest, response
             # Rename session file if it's currently using phone number
             if manager.user_id != str(telegram_id):
                 logger.info(f"Migrating session from {manager.user_id} to {telegram_id}")
-                await manager.disconnect() # Disconnect before renaming
-                manager.rename_session(str(telegram_id))
+                # await manager.disconnect() # No need to disconnect for StringSession
+                
+                # Update the manager's internal ID
+                old_user_id = manager.user_id
+                manager.user_id = str(telegram_id)
                 
                 # Update the manager in the global registry
                 from telegram_client import _active_clients
-                if phone in _active_clients:
-                    del _active_clients[phone]
+                if old_user_id in _active_clients:
+                    del _active_clients[old_user_id]
                 _active_clients[str(telegram_id)] = manager
             
             # Update session identifier

@@ -336,7 +336,8 @@ class FeedWorker:
                                         destination_channel_id=feed.destination_channel_id,
                                         message_id=event.message.id,
                                         delay_seconds=delay,
-                                        user_phone=user_id # Pass user_id for logging
+                                        user_phone=user_id, # Pass user_id for logging
+                                        source_peer=await event.get_input_chat()
                                     )
                                 )
                                 logger.info(f"Queued message {event.message.id} for forwarding to {feed.destination_channel_id}")
@@ -375,7 +376,7 @@ class FeedWorker:
             logger.error(f"Failed to setup handlers for user {user_id}: {e}")
 
 
-    async def _forward_message(self, client, source_chat_id: int, destination_channel_id: int, message_id: any, delay_seconds: int, user_phone: str = None):
+    async def _forward_message(self, client, source_chat_id: int, destination_channel_id: int, message_id: any, delay_seconds: int, user_phone: str = None, source_peer=None):
         """
         Forward message using the existing client connection.
         """
@@ -409,7 +410,7 @@ class FeedWorker:
             await client.forward_messages(
                 entity=destination_entity,
                 messages=message_id,
-                from_peer=source_chat_id,
+                from_peer=source_peer if source_peer else source_chat_id,
                 schedule=schedule_date
             )
             
