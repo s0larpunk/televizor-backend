@@ -34,15 +34,33 @@ from sqlalchemy import text
 
 # Configure logging
 import sys
+import logging
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout)
-    ]
-)
+# Configure logging to force stdout
+# We need to clear existing handlers to avoid duplication or stderr usage by uvicorn
+def setup_logging():
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    
+    # Remove existing handlers
+    for handler in root.handlers[:]:
+        root.removeHandler(handler)
+    
+    # Create stdout handler
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+    
+    root.addHandler(handler)
+    
+    # Also force uvicorn loggers to use this handler if they exist
+    for logger_name in ["uvicorn", "uvicorn.access", "uvicorn.error"]:
+        log = logging.getLogger(logger_name)
+        log.handlers = []
+        log.propagate = True
+
+setup_logging()
 logger = logging.getLogger(__name__)
 
 @asynccontextmanager
