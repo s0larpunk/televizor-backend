@@ -234,7 +234,9 @@ class FeedWorker:
                                 source_chat_id=source_id,
                                 destination_channel_id=feed.destination_channel_id,
                                 message_id=message_ids, # Pass list
-                                delay_seconds=delay
+                                delay_seconds=delay,
+                                user_phone=user_id,
+                                source_peer=data.get('source_peer')
                             )
                         )
                     except Exception as e:
@@ -305,7 +307,8 @@ class FeedWorker:
                             pending_albums[key] = {
                                 'message_ids': set(),
                                 'feeds': valid_feeds, # Assuming feeds are same for all msgs in album
-                                'timer': None
+                                'timer': None,
+                                'source_peer': await event.get_input_chat()
                             }
                         
                         pending_albums[key]['message_ids'].add(event.message.id)
