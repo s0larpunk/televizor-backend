@@ -389,9 +389,11 @@ class FeedWorker:
                 destination_entity = await client.get_input_entity(destination_channel_id)
             except ValueError:
                 # If it's a user ID, maybe we need to force fetch or it's 'me'
-                logger.warning(f"Could not resolve entity {destination_channel_id} from cache. Attempting to fetch...")
+                logger.warning(f"Could not resolve entity {destination_channel_id} from cache. Refreshing dialogs...")
                 try:
-                    destination_entity = await client.get_entity(destination_channel_id)
+                    # Refresh dialogs to get latest access hashes
+                    await client.get_dialogs(limit=None)
+                    destination_entity = await client.get_input_entity(destination_channel_id)
                 except Exception as fetch_err:
                     # If it failed and ID is positive, it might be a channel treated as user. Try PeerChannel.
                     if isinstance(destination_channel_id, int) and destination_channel_id > 0:

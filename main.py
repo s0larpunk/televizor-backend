@@ -36,7 +36,7 @@ from sqlalchemy import text
 import sys
 import logging
 
-# Configure logging to force stdout
+# Configure logging to force stdout for INFO and stderr for ERROR
 # We need to clear existing handlers to avoid duplication or stderr usage by uvicorn
 def setup_logging():
     root = logging.getLogger()
@@ -46,15 +46,24 @@ def setup_logging():
     for handler in root.handlers[:]:
         root.removeHandler(handler)
     
-    # Create stdout handler
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setLevel(logging.INFO)
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    handler.setFormatter(formatter)
+
+    # Create stdout handler for INFO and WARNING
+    stdout_handler = logging.StreamHandler(sys.stdout)
+    stdout_handler.setLevel(logging.INFO)
+    stdout_handler.setFormatter(formatter)
+    # Filter to only allow levels < ERROR (INFO, WARNING, DEBUG)
+    stdout_handler.addFilter(lambda record: record.levelno < logging.ERROR)
     
-    root.addHandler(handler)
+    # Create stderr handler for ERROR and CRITICAL
+    stderr_handler = logging.StreamHandler(sys.stderr)
+    stderr_handler.setLevel(logging.ERROR)
+    stderr_handler.setFormatter(formatter)
     
-    # Also force uvicorn loggers to use this handler if they exist
+    root.addHandler(stdout_handler)
+    root.addHandler(stderr_handler)
+    
+    # Also force uvicorn loggers to use these handlers
     for logger_name in ["uvicorn", "uvicorn.access", "uvicorn.error"]:
         log = logging.getLogger(logger_name)
         log.handlers = []
