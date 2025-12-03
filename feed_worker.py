@@ -8,6 +8,8 @@ from telegram_client import get_telegram_manager
 from feed_manager import FeedConfigManager
 from user_manager import UserManager
 from models import SubscriptionTier
+from sql_models import MessageLog
+from database import SessionLocal
 from redis_client import RateLimiter
 import config
 
@@ -26,6 +28,25 @@ class FeedWorker:
         self.active_handlers: Dict[str, Set] = {}  # user_id -> set of handler references
         self.user_config_hashes: Dict[str, str] = {} # user_id -> config hash
         self.running = False
+
+    def _log_db(self, user_phone: str, source_id: int, dest_id: int, msg_id: int, status: str, details: str = None):
+        """Log message event to database."""
+        try:
+            db = SessionLocal()
+            log_entry = MessageLog(
+                user_phone=user_phone,
+                source_channel_id=source_id,
+                destination_channel_id=dest_id,
+                message_id=msg_id,
+                status=status,
+                details=details
+            )
+            db.add(log_entry)
+            db.commit()
+            db.close()
+        except Exception as e:
+            logger.error(f"Failed to write to message log: {e}")
+
     
     async def start(self):
         """Start the feed worker."""
@@ -242,6 +263,16 @@ class FeedWorker:
                     if not relevant_feeds:
                         return
                     
+                    # Log reception (difference caught)
+                    self._log_db(
+                        user_phone=user_id,
+                        source_id=source_channel_id,
+                        dest_id=0, # Not assigned yet
+                        msg_id=event.message.id,
+                        status='received',
+                        details=f"Received update from {source_channel_id} for user {user_id}"
+                    )
+                    
                     # Check if this is part of an album
                     grouped_id = event.message.grouped_id
                     
@@ -303,10 +334,12 @@ class FeedWorker:
                                         source_chat_id=source_channel_id,
                                         destination_channel_id=feed.destination_channel_id,
                                         message_id=event.message.id,
-                                        delay_seconds=delay
+                                        delay_seconds=delay,
+                                        user_phone=user_id # Pass user_id for logging
                                     )
                                 )
                                 logger.info(f"Queued message {event.message.id} for forwarding to {feed.destination_channel_id}")
+                                self._log_db(user_id, source_channel_id, feed.destination_channel_id, event.message.id, 'queued')
                             except Exception as e:
                                 logger.error(f"Error processing feed {feed.id}: {e}")
                             
@@ -340,11 +373,8 @@ class FeedWorker:
         except Exception as e:
             logger.error(f"Failed to setup handlers for user {user_id}: {e}")
 
-    async def _forward_message(self, client, source_chat_id: int, destination_channel_id: int, message_id: int, delay_seconds: int):
-        """
-        Forward message using the existing client connection.
-        """
-    async def _forward_message(self, client, source_chat_id: int, destination_channel_id: int, message_id: any, delay_seconds: int):
+
+    async def _forward_message(self, client, source_chat_id: int, destination_channel_id: int, message_id: any, delay_seconds: int, user_phone: str = None):
         """
         Forward message using the existing client connection.
         """
@@ -377,8 +407,12 @@ class FeedWorker:
             
             if schedule_date:
                 logger.info(f"Successfully scheduled {msg_desc} from {source_chat_id} to {destination_channel_id} for {schedule_date}")
+                if user_phone:
+                    self._log_db(user_phone, source_chat_id, destination_channel_id, message_id if isinstance(message_id, int) else 0, 'scheduled', str(schedule_date))
             else:
                 logger.info(f"Successfully forwarded {msg_desc} from {source_chat_id} to {destination_channel_id}")
+                if user_phone:
+                    self._log_db(user_phone, source_chat_id, destination_channel_id, message_id if isinstance(message_id, int) else 0, 'forwarded')
             
         except Exception as e:
             logger.error(f"Error forwarding message {message_id} to {destination_channel_id}: {e}")

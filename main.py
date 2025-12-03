@@ -5,7 +5,7 @@ from typing import Optional
 import uuid
 import models
 # Import ALL SQLAlchemy models so tables get created
-from sql_models import WebSession, User, Feed, UserSession
+from sql_models import WebSession, User, Feed, UserSession, MessageLog
 from telegram_client import get_telegram_manager, cleanup_client
 import asyncio
 from contextlib import asynccontextmanager

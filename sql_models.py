@@ -66,3 +66,15 @@ class WebSession(Base):
     authenticated = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     expires_at = Column(DateTime)
+
+class MessageLog(Base):
+    __tablename__ = "message_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_phone = Column(String, index=True)
+    source_channel_id = Column(BigInteger)
+    destination_channel_id = Column(BigInteger)
+    message_id = Column(BigInteger)
+    status = Column(String)  # 'received', 'queued', 'forwarded', 'error'
+    details = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
