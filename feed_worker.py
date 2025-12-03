@@ -149,14 +149,16 @@ class FeedWorker:
     async def _setup_user_handlers(self, user_id: str, feeds: list, sub_status):
         """Set up message handlers for a user's feeds."""
         try:
-            # Use Telegram ID if available, otherwise fallback to phone (user_id here is phone)
-            user_identifier = str(sub_status.telegram_id) if sub_status.telegram_id else user_id
+            # Get the client for this user
+            session_string = self.user_manager.get_session(user_id, instance_id=config.INSTANCE_ID)
+            if not session_string:
+                logger.warning(f"No session found for user {user_id}, skipping")
+                return
+
+            # Resolve correct manager ID (prefer Telegram ID if available to match main.py)
+            manager_id = str(sub_status.telegram_id) if sub_status.telegram_id else user_id
             
-            # Load session string from DB
-            # user_id is the phone number here
-            session_string = self.user_manager.get_session(user_id)
-            
-            manager = get_telegram_manager(user_identifier, session_string)
+            manager = get_telegram_manager(manager_id, session_string)
             
             # Check if authenticated
             if not await manager.is_authenticated():
@@ -417,6 +419,10 @@ class FeedWorker:
                     else:
                         logger.error(f"Failed to fetch entity {destination_channel_id}: {fetch_err}")
                         raise fetch_err
+
+            # Verify identity
+            me = await client.get_me()
+            logger.info(f"Forwarding as user: {me.id} ({me.username or me.first_name})")
 
             await client.forward_messages(
                 entity=destination_entity,
