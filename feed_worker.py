@@ -392,7 +392,18 @@ class FeedWorker:
                 logger.warning(f"Could not resolve entity {destination_channel_id} from cache. Refreshing dialogs...")
                 try:
                     # Refresh dialogs to get latest access hashes
-                    await client.get_dialogs(limit=None)
+                    dialogs = await client.get_dialogs(limit=None)
+                    
+                    # Debug: Check if ID exists in dialogs
+                    found = False
+                    for d in dialogs:
+                        if d.entity.id == destination_channel_id:
+                            found = True
+                            logger.info(f"DEBUG: Found {destination_channel_id} in dialogs. Type: {type(d.entity).__name__}")
+                            break
+                    if not found:
+                        logger.warning(f"DEBUG: {destination_channel_id} NOT found in dialogs after refresh.")
+                        
                     destination_entity = await client.get_input_entity(destination_channel_id)
                 except Exception as fetch_err:
                     # If it failed and ID is positive, it might be a channel treated as user. Try PeerChannel.
