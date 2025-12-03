@@ -3,6 +3,7 @@ import logging
 from typing import Dict, Set
 from datetime import datetime, timedelta
 from telethon import TelegramClient, events, utils
+from telethon.tl.types import PeerChannel
 from telethon.errors import SessionRevokedError, AuthKeyError
 from telegram_client import get_telegram_manager
 from feed_manager import FeedConfigManager
@@ -393,8 +394,17 @@ class FeedWorker:
                 try:
                     destination_entity = await client.get_entity(destination_channel_id)
                 except Exception as fetch_err:
-                    logger.error(f"Failed to fetch entity {destination_channel_id}: {fetch_err}")
-                    raise fetch_err
+                    # If it failed and ID is positive, it might be a channel treated as user. Try PeerChannel.
+                    if isinstance(destination_channel_id, int) and destination_channel_id > 0:
+                        try:
+                            logger.info(f"Retrying fetch for {destination_channel_id} as PeerChannel...")
+                            destination_entity = await client.get_entity(PeerChannel(destination_channel_id))
+                        except Exception as channel_err:
+                            logger.error(f"Failed to fetch entity {destination_channel_id} as PeerChannel: {channel_err}")
+                            raise fetch_err # Raise original error or channel_err
+                    else:
+                        logger.error(f"Failed to fetch entity {destination_channel_id}: {fetch_err}")
+                        raise fetch_err
 
             await client.forward_messages(
                 entity=destination_entity,
