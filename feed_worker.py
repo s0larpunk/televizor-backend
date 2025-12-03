@@ -265,14 +265,9 @@ class FeedWorker:
                         return
                     
                     # Log reception (difference caught)
-                    self._log_db(
-                        user_phone=user_id,
-                        source_id=source_channel_id,
-                        dest_id=0, # Not assigned yet
-                        msg_id=event.message.id,
-                        status='received',
-                        details=f"Received update from {source_channel_id} for user {user_id}"
-                    )
+                    # Log reception (difference caught)
+                    # self._log_db(...) - Removed in favor of stdout logging per user request
+                    # logger.info(f"Received update from {source_channel_id} for user {user_id}")
                     
                     # Check if this is part of an album
                     grouped_id = event.message.grouped_id
@@ -340,8 +335,8 @@ class FeedWorker:
                                         source_peer=await event.get_input_chat()
                                     )
                                 )
-                                logger.info(f"Queued message {event.message.id} for forwarding to {feed.destination_channel_id}")
-                                self._log_db(user_id, source_channel_id, feed.destination_channel_id, event.message.id, 'queued')
+                                logger.info(f"New message detected for channel {source_channel_id} of user {user_id} that is part of feed {feed.id}. Forwarding to channel {feed.destination_channel_id}.")
+                                # self._log_db(...) - Removed
                             except Exception as e:
                                 logger.error(f"Error processing feed {feed.id}: {e}")
                             
@@ -418,12 +413,8 @@ class FeedWorker:
             
             if schedule_date:
                 logger.info(f"Successfully scheduled {msg_desc} from {source_chat_id} to {destination_channel_id} for {schedule_date}")
-                if user_phone:
-                    self._log_db(user_phone, source_chat_id, destination_channel_id, message_id if isinstance(message_id, int) else 0, 'scheduled', str(schedule_date))
             else:
                 logger.info(f"Successfully forwarded {msg_desc} from {source_chat_id} to {destination_channel_id}")
-                if user_phone:
-                    self._log_db(user_phone, source_chat_id, destination_channel_id, message_id if isinstance(message_id, int) else 0, 'forwarded')
             
         except Exception as e:
             logger.error(f"Error forwarding message {message_id} to {destination_channel_id}: {e}")
