@@ -275,10 +275,8 @@ class FeedWorker:
                     if not relevant_feeds:
                         return
                     
-                    # Log reception (difference caught)
-                    # Log reception (difference caught)
-                    # self._log_db(...) - Removed in favor of stdout logging per user request
-                    # logger.info(f"Received update from {source_channel_id} for user {user_id}")
+                    # Log reception to debug "Got difference" and filtering
+                    logger.info(f"Received message {event.message.id} from monitored channel {source_channel_id} (User: {user_id})")
                     
                     # Check if this is part of an album
                     grouped_id = event.message.grouped_id
