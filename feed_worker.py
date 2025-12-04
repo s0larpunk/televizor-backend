@@ -4,7 +4,7 @@ import os
 import re
 from typing import Dict, Set, List, Optional
 from datetime import datetime, timedelta
-from telethon import TelegramClient, events, functions, types
+from telethon import TelegramClient, events, functions, types, utils
 from telethon.tl.types import PeerChannel, PeerUser, PeerChat, MessageEntityTextUrl, MessageEntityUrl
 from telethon.errors import SessionRevokedError, AuthKeyError, ChannelPrivateError, ChannelInvalidError
 from telegram_client import get_telegram_manager
