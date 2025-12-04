@@ -64,6 +64,7 @@ class WebSession(Base):
     user_identifier = Column(String, nullable=True)
     phone_code_hash = Column(String, nullable=True)
     authenticated = Column(Boolean, default=False)
+    referral_code = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     expires_at = Column(DateTime)
 

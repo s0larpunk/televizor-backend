@@ -385,14 +385,22 @@ async def verify_code(request: Request, body: models.VerifyCodeRequest, response
         is_new_user = False
         try:
             # Check if this is a new user
-            _, is_new_user = user_manager.get_subscription_status(phone, return_is_new=True)
+            status, is_new_user = user_manager.get_subscription_status(phone, return_is_new=True)
             
-            # Only apply referral bonus if this is a NEW user
-            if body.referral_code and is_new_user:
-                logger.info(f"Applying referral bonus for new user {phone} with code {body.referral_code}")
-                user_manager.apply_referral_bonus(phone, body.referral_code)
-            elif body.referral_code and not is_new_user:
-                logger.info(f"Skipping referral bonus for existing user {phone}")
+            # Apply referral bonus if new user OR existing user with no active sub (to fix missed referrals)
+            if body.referral_code:
+                should_apply = is_new_user
+                if not should_apply:
+                    # Check if they are eligible (Free tier)
+                    if status.tier == SubscriptionTier.FREE:
+                        should_apply = True
+                        logger.info(f"Existing user {phone} is eligible for referral (Free tier)")
+                
+                if should_apply:
+                    logger.info(f"Applying referral bonus for user {phone} with code {body.referral_code}")
+                    user_manager.apply_referral_bonus(phone, body.referral_code)
+                else:
+                    logger.info(f"Skipping referral bonus for ineligible existing user {phone}")
         except Exception as e:
             logger.error(f"Error handling referral for {phone}: {e}")
 
@@ -400,10 +408,14 @@ async def verify_code(request: Request, body: models.VerifyCodeRequest, response
             "success": True,
             "message": "Authentication successful",
             "is_new_user": is_new_user,
-            "referral_applied": body.referral_code and is_new_user
+            "referral_applied": body.referral_code and (is_new_user or status.tier == SubscriptionTier.FREE)
         }
     except Exception as e:
         if "2FA_REQUIRED" in str(e):
+            # Store referral code in session if present
+            if body.referral_code:
+                update_web_session(session_id, referral_code=body.referral_code)
+                
             # Set cookie even for 2FA so the next request can find the session
             response.set_cookie(
                 key="session_id",
@@ -448,6 +460,30 @@ async def verify_password(
             logger.info(f"Session string saved for phone: {phone} (instance: {config.INSTANCE_ID})")
         
         update_web_session(session_id, authenticated=True)
+        
+        # Apply referral bonus if present in session
+        if session.referral_code:
+            try:
+                # Check if this is a new user
+                status, is_new_user = user_manager.get_subscription_status(phone, return_is_new=True)
+                
+                should_apply = is_new_user
+                if not should_apply:
+                    # Check if they are eligible (Free tier)
+                    if status.tier == SubscriptionTier.FREE:
+                        should_apply = True
+                        logger.info(f"Existing user {phone} is eligible for referral (Free tier) after 2FA")
+
+                if should_apply:
+                    logger.info(f"Applying referral bonus for user {phone} with code {session.referral_code} (after 2FA)")
+                    user_manager.apply_referral_bonus(phone, session.referral_code)
+                else:
+                    logger.info(f"Skipping referral bonus for ineligible existing user {phone} (after 2FA)")
+                    
+                # Clear referral code from session
+                update_web_session(session_id, referral_code=None)
+            except Exception as e:
+                logger.error(f"Error handling referral for {phone} after 2FA: {e}")
         
         # Refresh cookie
         response.set_cookie(

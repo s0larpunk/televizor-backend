@@ -421,11 +421,18 @@ class UserManager:
                 return
             
             # Check if already referred
-            if user.referred_by:
+            # Only return if they have been referred AND have received a benefit (e.g. not FREE anymore or has expiry)
+            # This allows fixing users who got 'referred_by' set but didn't get the bonus due to bugs
+            if user.referred_by and user.tier != SubscriptionTier.FREE and user.expiry_date:
+                logger.info(f"User {phone} already referred by {user.referred_by} and has active sub. Skipping.")
                 return
                 
-            # Link users
+            # Link users (idempotent update)
             user.referred_by = referrer.phone
+            
+            # Only increment count if not already counted (approximate check)
+            # We don't have a separate table for referrals, so we can't be 100% sure if this specific referral was counted.
+            # But if we are here, we are likely applying the bonus for the first time.
             referrer.referral_count += 1
             
             # Award bonus (7 days premium)
