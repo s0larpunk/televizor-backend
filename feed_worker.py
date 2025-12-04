@@ -11,7 +11,7 @@ from telegram_client import get_telegram_manager
 from feed_manager import FeedConfigManager
 from user_manager import UserManager
 from models import SubscriptionTier
-from sql_models import MessageLog, FeededConfigManager
+from sql_models import MessageLog, Feed
 from database import SessionLocal
 from redis_client import RateLimiter
 import config
