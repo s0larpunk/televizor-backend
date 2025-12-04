@@ -221,7 +221,13 @@ class FeedWorker:
                 
                 logger.info(f"Flushing album {key[1]} with {len(message_ids)} messages from {source_id}")
                 
+                # Deduplicate destinations to avoid duplicate forwarding
+                processed_destinations = set()
+                
                 for feed in feeds_to_process:
+                    if feed.destination_channel_id in processed_destinations:
+                        continue
+                        
                     try:
                         # We use the first message for filter checks in the album?
                         # Or we should have filtered them individually before adding?
@@ -241,6 +247,7 @@ class FeedWorker:
                                 source_peer=data.get('source_peer')
                             )
                         )
+                        processed_destinations.add(feed.destination_channel_id)
                     except Exception as e:
                         logger.error(f"Error flushing album to feed {feed.id}: {e}")
 
@@ -325,7 +332,11 @@ class FeedWorker:
                         )
                     else:
                         # Single message
+                        processed_destinations = set()
                         for feed in valid_feeds:
+                            if feed.destination_channel_id in processed_destinations:
+                                continue
+                                
                             try:
                                 logger.info(f"Processing feed {feed.id} for message {event.message.id}")
                                 delay = 15 if getattr(feed, 'delay_enabled', True) else 0
@@ -341,6 +352,7 @@ class FeedWorker:
                                     )
                                 )
                                 logger.info(f"New message detected for channel {source_channel_id} of user {user_id} that is part of feed {feed.id}. Forwarding to channel {feed.destination_channel_id}.")
+                                processed_destinations.add(feed.destination_channel_id)
                                 # self._log_db(...) - Removed
                             except Exception as e:
                                 logger.error(f"Error processing feed {feed.id}: {e}")
