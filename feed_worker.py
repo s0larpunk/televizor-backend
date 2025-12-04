@@ -1,15 +1,17 @@
 import asyncio
 import logging
-from typing import Dict, Set
+import os
+import re
+from typing import Dict, Set, List, Optional
 from datetime import datetime, timedelta
-from telethon import TelegramClient, events, utils
-from telethon.tl.types import PeerChannel
-from telethon.errors import SessionRevokedError, AuthKeyError
+from telethon import TelegramClient, events, functions, types
+from telethon.tl.types import PeerChannel, PeerUser, PeerChat, MessageEntityTextUrl, MessageEntityUrl
+from telethon.errors import SessionRevokedError, AuthKeyError, ChannelPrivateError, ChannelInvalidError
 from telegram_client import get_telegram_manager
 from feed_manager import FeedConfigManager
 from user_manager import UserManager
 from models import SubscriptionTier
-from sql_models import MessageLog
+from sql_models import MessageLog, FeededConfigManager
 from database import SessionLocal
 from redis_client import RateLimiter
 import config
@@ -221,35 +223,34 @@ class FeedWorker:
                 
                 logger.info(f"Flushing album {key[1]} with {len(message_ids)} messages from {source_id}")
                 
-                # Deduplicate destinations to avoid duplicate forwarding
-                processed_destinations = set()
-                
+                # Group feeds by destination to avoid duplicate forwarding and handle errors for all feeds
+                feeds_by_dest = {}
                 for feed in feeds_to_process:
-                    if feed.destination_channel_id in processed_destinations:
-                        continue
-                        
+                    if feed.destination_channel_id not in feeds_by_dest:
+                        feeds_by_dest[feed.destination_channel_id] = []
+                    feeds_by_dest[feed.destination_channel_id].append(feed)
+                
+                for dest_id, feeds in feeds_by_dest.items():
                     try:
-                        # We use the first message for filter checks in the album?
-                        # Or we should have filtered them individually before adding?
-                        # If we filter individually, we might drop some parts of the album.
-                        # But `handler` logic below does filtering BEFORE buffering.
-                        # So `message_ids` here are already filtered/approved.
+                        # Use first feed for config
+                        feed = feeds[0]
+                        feed_ids = [f.id for f in feeds]
                         
                         delay = 15 if getattr(feed, 'delay_enabled', True) else 0
                         asyncio.create_task(
                             self._forward_message(
                                 client=client,
                                 source_chat_id=source_id,
-                                destination_channel_id=feed.destination_channel_id,
+                                destination_channel_id=dest_id,
                                 message_id=message_ids, # Pass list
                                 delay_seconds=delay,
                                 user_phone=user_id,
-                                source_peer=data.get('source_peer')
+                                source_peer=data.get('source_peer'),
+                                feed_ids=feed_ids
                             )
                         )
-                        processed_destinations.add(feed.destination_channel_id)
                     except Exception as e:
-                        logger.error(f"Error flushing album to feed {feed.id}: {e}")
+                        logger.error(f"Error flushing album to destination {dest_id}: {e}")
 
             # Register handler for new messages
             # We'll listen to ALL messages and filter inside to debug ID mismatches
@@ -330,30 +331,35 @@ class FeedWorker:
                         )
                     else:
                         # Single message
-                        processed_destinations = set()
+                        # Group feeds by destination
+                        feeds_by_dest = {}
                         for feed in valid_feeds:
-                            if feed.destination_channel_id in processed_destinations:
-                                continue
-                                
+                            if feed.destination_channel_id not in feeds_by_dest:
+                                feeds_by_dest[feed.destination_channel_id] = []
+                            feeds_by_dest[feed.destination_channel_id].append(feed)
+
+                        for dest_id, feeds in feeds_by_dest.items():
                             try:
-                                logger.info(f"Processing feed {feed.id} for message {event.message.id}")
+                                feed = feeds[0]
+                                feed_ids = [f.id for f in feeds]
+                                
+                                logger.info(f"Processing feeds {feed_ids} for message {event.message.id}")
                                 delay = 15 if getattr(feed, 'delay_enabled', True) else 0
                                 asyncio.create_task(
                                     self._forward_message(
                                         client=client,
                                         source_chat_id=source_channel_id,
-                                        destination_channel_id=feed.destination_channel_id,
+                                        destination_channel_id=dest_id,
                                         message_id=event.message.id,
                                         delay_seconds=delay,
                                         user_phone=user_id, # Pass user_id for logging
-                                        source_peer=await event.get_input_chat()
+                                        source_peer=await event.get_input_chat(),
+                                        feed_ids=feed_ids
                                     )
                                 )
-                                logger.info(f"New message detected for channel {source_channel_id} of user {user_id} that is part of feed {feed.id}. Forwarding to channel {feed.destination_channel_id}.")
-                                processed_destinations.add(feed.destination_channel_id)
-                                # self._log_db(...) - Removed
+                                logger.info(f"New message detected for channel {source_channel_id} of user {user_id}. Forwarding to channel {dest_id}.")
                             except Exception as e:
-                                logger.error(f"Error processing feed {feed.id}: {e}")
+                                logger.error(f"Error processing feeds for destination {dest_id}: {e}")
                             
                 except Exception as e:
                     logger.error(f"Error in message handler: {e}")
@@ -386,7 +392,7 @@ class FeedWorker:
             logger.error(f"Failed to setup handlers for user {user_id}: {e}")
 
 
-    async def _forward_message(self, client, source_chat_id: int, destination_channel_id: int, message_id: any, delay_seconds: int, user_phone: str = None, source_peer=None):
+    async def _forward_message(self, client, source_chat_id: int, destination_channel_id: int, message_id: any, delay_seconds: int, user_phone: str = None, source_peer=None, feed_ids: List[str] = None):
         """
         Forward message using the existing client connection.
         """
@@ -447,6 +453,26 @@ class FeedWorker:
                 logger.info(f"Successfully scheduled {msg_desc} from {source_chat_id} to {destination_channel_id} for {schedule_date}")
             else:
                 logger.info(f"Successfully forwarded {msg_desc} from {source_chat_id} to {destination_channel_id}")
+                
+        except (ChannelPrivateError, ChannelInvalidError, ValueError) as e:
+            # Handle deleted/inaccessible destination channel
+            error_msg = f"Destination channel {destination_channel_id} inaccessible: {e}"
+            logger.error(error_msg)
+            
+            if feed_ids:
+                logger.info(f"Marking feeds {feed_ids} with error ERR_DESTINATION_DELETED")
+                try:
+                    with SessionLocal() as db:
+                        db.query(Feed).filter(Feed.id.in_(feed_ids)).update(
+                            {"error": "ERR_DESTINATION_DELETED", "active": False}, 
+                            synchronize_session=False
+                        )
+                        db.commit()
+                except Exception as db_err:
+                    logger.error(f"Failed to update feed error status: {db_err}")
+                    
+        except Exception as e:
+            logger.error(f"Failed to forward message to {destination_channel_id}: {e}")
             
         except Exception as e:
             logger.error(f"Error forwarding message {message_id} to {destination_channel_id}: {e}")
