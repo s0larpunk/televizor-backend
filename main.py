@@ -1495,7 +1495,7 @@ async def create_stripe_checkout(request: Request):
         # Basic Year: 20 EUR, Advanced Year: 30 EUR
         unit_amount = 300
         product_name = "Televizor Premium Advanced"
-        interval = "month"
+        # interval = "month" # Removed for one-time payment
         
         if payload == "premium_advanced_upgrade":
             # Dynamic Upgrade + Extend Logic
@@ -1536,12 +1536,12 @@ async def create_stripe_checkout(request: Request):
         elif payload == "premium_basic_year":
             unit_amount = 2000
             product_name = "Televizor Premium Basic (Yearly)"
-            interval = "year"
+            # interval = "year" # Removed for one-time payment
             duration_months = 1 # Yearly is 1 unit of 1 year
         elif payload == "premium_advanced_year":
             unit_amount = 3000
             product_name = "Televizor Premium Advanced (Yearly)"
-            interval = "year"
+            # interval = "year" # Removed for one-time payment
             duration_months = 1
 
         # Get user's Telegram ID if linked (for metadata)
@@ -1580,12 +1580,13 @@ async def create_stripe_checkout(request: Request):
                         'name': product_name,
                     },
                     'unit_amount': unit_amount,
-                    'recurring': {
-                        'interval': interval,
-                    },
+                    # 'recurring': { # Removed for one-time payment
+                    #     'interval': interval,
+                    # },
                 },
                 'quantity': duration_months,
-            }]
+            }],
+            mode='payment'
         )
         
         logger.info(f"Created Stripe checkout for {phone} ({payload})")
@@ -1660,7 +1661,8 @@ async def create_upgrade_checkout(request: Request):
                     'unit_amount': amount_cents,
                 },
                 'quantity': 1,
-            }]
+            }],
+            mode='payment'
         )
         
         logger.info(f"Created Upgrade checkout for {phone}: €{amount_eur} ({description})")

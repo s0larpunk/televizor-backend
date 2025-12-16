@@ -35,7 +35,8 @@ class StripePaymentService:
         cancel_url: str,
         customer_email: Optional[str] = None,
         metadata: Optional[Dict[str, str]] = None,
-        line_items: Optional[list] = None
+        line_items: Optional[list] = None,
+        mode: str = 'payment'
     ) -> Dict[str, Any]:
         """
         Create a Stripe Checkout session
@@ -46,6 +47,7 @@ class StripePaymentService:
             customer_email: Customer's email address (optional)
             metadata: Additional metadata to attach to the session
             line_items: Custom line items with price_data (optional, overrides price_id)
+            mode: Checkout mode ('payment' for one-time, 'subscription' for recurring)
             
         Returns:
             dict: Checkout session data including session ID and URL
@@ -66,7 +68,7 @@ class StripePaymentService:
             session = stripe.checkout.Session.create(
                 payment_method_types=['card'],
                 line_items=line_items,
-                mode='subscription',
+                mode=mode,
                 success_url=success_url,
                 cancel_url=cancel_url,
                 customer_email=customer_email,
