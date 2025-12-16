@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Cookie, Response, Request, Header, Body, Depends
 from fastapi.responses import PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Optional
+from typing import Optional, Any
 import uuid
 import models
 # Import ALL SQLAlchemy models so tables get created
@@ -1094,6 +1094,46 @@ async def get_tm(request: Request):
     # If session_string is None, it will create a new empty session (which is fine, user might need to re-login if DB is empty)
     return get_telegram_manager(phone, session_string)
 
+async def notify_admin_subscription(phone: str, tier: str, amount: Any, currency: str, provider: str):
+    """Notify admin about new subscription."""
+    try:
+        admin_phone = config.ADMIN_PHONE
+        # Look up admin's telegram ID
+        user = user_manager.get_user_by_phone(phone)
+        if user and user.telegram_id:
+            user_str = f"{phone} (ID: {user.telegram_id})"
+        else:
+            user_str = phone
+            
+        admin = user_manager.get_user_by_phone(admin_phone)
+        if admin and admin.telegram_id:
+            admin_id = admin.telegram_id
+            
+            message = (
+                f"🚀 <b>New Subscription!</b>\n\n"
+                f"👤 <b>User:</b> {user_str}\n"
+                f"💎 <b>Tier:</b> {tier}\n"
+                f"💰 <b>Amount:</b> {amount} {currency}\n"
+                f"💳 <b>Provider:</b> {provider}\n"
+                f"⏰ <b>Time:</b> {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}"
+            )
+            
+            await payment_service.send_message(admin_id, message, parse_mode="HTML")
+            logger.info(f"Admin notification sent to {admin_phone} (ID: {admin_id})")
+        else:
+            logger.warning(f"Admin {admin_phone} not found or has no Telegram ID linked. Notification skipped.")
+            
+    except Exception as e:
+        logger.error(f"Error sending admin notification: {e}")
+
+@app.post("/api/admin/test-notify")
+async def test_admin_notify(request: Request, phone: str = Body(..., embed=True)):
+    """Test admin notification."""
+    # Simple security check (e.g. check if session user is admin phone)
+    # For now, just open
+    await notify_admin_subscription(phone, "TEST_TIER", 9.99, "EUR", "TestProvider")
+    return {"success": True}
+
 @app.post("/api/payment/create-invoice")
 @limiter.limit("10/minute")
 async def create_payment_invoice(request: Request):
@@ -1314,6 +1354,8 @@ async def payment_webhook(
                     if phone:
                         user_manager.upgrade_to_premium(phone, payment_method="stars", tier=tier, duration_days=duration_days)
                         logger.info(f"User {phone} (ID: {user_id}) upgraded to premium")
+                        
+                        await notify_admin_subscription(phone, str(tier), amount, currency, "Telegram Stars")
                         
                         await payment_service.send_message(
                             user_id, 
@@ -1722,6 +1764,7 @@ async def verify_stripe_payment(
 
                 user_manager.upgrade_to_premium(phone, payment_method="stripe", tier=tier, duration_days=duration_days)
                 logger.info(f"User {phone} upgraded to Premium via Stripe verification (payload: {payload})")
+                await notify_admin_subscription(phone, str(tier), "Standard/Unknown", "EUR", "Stripe (Verification)")
                 return {"success": True, "status": "paid"}
             else:
                 logger.warning(f"Phone mismatch in Stripe verification: {phone} vs {current_phone}")
@@ -1787,6 +1830,7 @@ async def stripe_webhook(request: Request):
                         duration_days=0 # Don't extend expiry, just change tier (expiry is managed by Stripe cycle)
                     )
                     logger.info(f"Successfully upgraded {phone} to Advanced")
+                    await notify_admin_subscription(phone, str(SubscriptionTier.PREMIUM_ADVANCED), 3.00, "EUR", "Stripe (Upgrade)")
             else:
                 # Regular subscription payment
                 # Extract payload/tier from metadata
@@ -1818,6 +1862,7 @@ async def stripe_webhook(request: Request):
                     stripe_subscription_id=stripe_subscription_id
                 )
                 logger.info(f"User {phone} upgraded to Premium via Stripe")
+                await notify_admin_subscription(phone, str(tier), "Subscription", "EUR", "Stripe")
         
         # Handle subscription cancellation
         elif event["type"] == "customer.subscription.deleted":
@@ -2013,6 +2058,7 @@ async def tbank_webhook(request: Request):
                     user_manager.upgrade_to_premium(phone, payment_method="tbank", tier=tier, duration_days=duration_days)
                     
                     logger.info(f"Upgraded user {phone} to Premium via T-Bank payment {payment_id}")
+                    await notify_admin_subscription(phone, str(tier), result.get("amount", 0)/100, "RUB", "T-Bank")
                     
                 except Exception as e:
                     logger.error(f"Error upgrading user after T-Bank payment: {e}")
@@ -2177,6 +2223,8 @@ async def coinbase_webhook(request: Request):
                     duration_days = 365
                 
                 user_manager.upgrade_to_premium(phone, payment_method="coinbase", tier=tier, duration_days=duration_days)
+                logger.info(f"Upgraded user {phone} to Premium via Coinbase")
+                await notify_admin_subscription(phone, str(tier), "Crypto", "EUR", "Coinbase")
             else:
                 logger.warning("Coinbase webhook missing phone metadata")
                 

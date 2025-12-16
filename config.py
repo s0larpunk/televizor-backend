@@ -57,3 +57,6 @@ TBANK_TEST_MODE = os.getenv("TBANK_TEST_MODE", "true").lower() == "true"
 # Coinbase Configuration
 COINBASE_API_KEY = os.getenv("COINBASE_API_KEY", "")
 COINBASE_WEBHOOK_SECRET = os.getenv("COINBASE_WEBHOOK_SECRET", "")
+
+# Admin Notification
+ADMIN_PHONE = os.getenv("ADMIN_PHONE", "+33759863632")
